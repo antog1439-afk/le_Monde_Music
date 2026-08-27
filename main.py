@@ -32,12 +32,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # === ТОКЕНЫ ===
-TELEGRAM_TOKEN = '8586892813:AAE3qgxUtGTfA6kefeuOlPy2bNypojFj6Sw'
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '').strip()
+if not TELEGRAM_TOKEN:
+    raise RuntimeError('Переменная окружения TELEGRAM_TOKEN не задана')
+
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # === НАСТРОЙКИ ===
 CACHE_DURATION = 3600
-SUBSCRIPTIONS_FILE = 'user_subscriptions.json'
+DATA_DIR = os.getenv('DATA_DIR', '.').strip() or '.'
+SUBSCRIPTIONS_FILE = os.getenv(
+    'SUBSCRIPTIONS_FILE',
+    os.path.join(DATA_DIR, 'user_subscriptions.json')
+)
+RELEASE_CHECK_FILE = os.path.join(DATA_DIR, 'last_release_check.json')
 MAX_RETRIES = 5
 RETRY_DELAY = 5
 CONCERTS_CACHE_DURATION = 3600
@@ -3724,7 +3732,7 @@ def check_new_releases_for_subscriptions():
         return []
     
     new_releases = []
-    release_check_file = 'last_release_check.json'
+    release_check_file = RELEASE_CHECK_FILE
     
     last_check = {}
     if os.path.exists(release_check_file):
@@ -4058,6 +4066,8 @@ if __name__ == '__main__':
     print("🔄 С автоматическим переподключением")
     print("=" * 60)
     
+    os.makedirs(DATA_DIR, exist_ok=True)
+
     try:
         import bs4
         print("✅ BeautifulSoup установлен")

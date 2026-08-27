@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.py[cod]
+*.log
+cookies.txt
+last_release_check.json
+temp_audio.*

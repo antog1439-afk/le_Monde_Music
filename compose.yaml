@@ -1,0 +1,16 @@
+services:
+  bot:
+    build:
+      context: .
+    image: le-monde-music:latest
+    restart: unless-stopped
+    init: true
+    environment:
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:?Set TELEGRAM_TOKEN in .env}
+      DATA_DIR: /app/data
+    volumes:
+      - le_monde_music_data:/app/data
+
+volumes:
+  le_monde_music_data:
+    name: le_monde_music_data

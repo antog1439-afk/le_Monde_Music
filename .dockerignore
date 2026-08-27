@@ -1,0 +1,15 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+.idea
+.vscode
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+.DS_Store
+cookies.txt
+user_subscriptions.json
+last_release_check.json
