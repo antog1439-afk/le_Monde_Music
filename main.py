@@ -712,6 +712,103 @@ def search_yandex_music(query: str, limit: int = 30) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Ошибка поиска в Яндекс Музыке: {e}")
         return results
+        
+def search_yandex_music_track(artist: str, title: str) -> Optional[Dict[str, Any]]:
+    """Ищет трек в Яндекс Музыке (возвращает информацию с обложкой)"""
+    try:
+        query = f"{artist} {title}"
+        encoded = urllib.parse.quote(query)
+        url = f"https://music.yandex.ru/search?text={encoded}&type=all"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Ищем ссылку на трек
+        track_link = soup.find('a', href=re.compile(r'/track/\d+'))
+        if not track_link:
+            return None
+        
+        href = track_link.get('href')
+        if not href:
+            return None
+        
+        if href.startswith('/'):
+            track_url = 'https://music.yandex.ru' + href
+        else:
+            track_url = href
+        
+        # Ищем название и исполнителя
+        track_title = None
+        track_artist = None
+        
+        # Пробуем найти через JSON-LD
+        scripts = soup.find_all('script', type='application/ld+json')
+        for script in scripts:
+            try:
+                data = json.loads(script.string)
+                if isinstance(data, dict):
+                    if data.get('@type') == 'MusicRecording':
+                        track_title = data.get('name', title)
+                        track_artist = data.get('artist', {}).get('name', artist)
+                        break
+            except:
+                pass
+        
+        # Если не нашли через JSON — ищем в HTML
+        if not track_title or not track_artist:
+            title_elem = soup.find('div', class_=re.compile(r'title|name|track', re.I))
+            artist_elem = soup.find('div', class_=re.compile(r'artist|performer|author', re.I))
+            
+            if title_elem:
+                track_title = title_elem.text.strip()
+            if artist_elem:
+                track_artist = artist_elem.text.strip()
+        
+        if not track_title:
+            track_title = title
+        if not track_artist:
+            track_artist = artist
+        
+        # Ищем обложку
+        cover_url = None
+        img = soup.find('img', class_=re.compile(r'cover|image|album', re.I))
+        if img:
+            cover_url = img.get('src') or img.get('data-src')
+            if cover_url and cover_url.startswith('//'):
+                cover_url = 'https:' + cover_url
+            cover_url = re.sub(r'/\d+x\d+/', '/400x400/', cover_url)
+        
+        # Ищем длительность
+        duration = None
+        duration_match = re.search(r'(\d+):(\d{2})', soup.text)
+        if duration_match:
+            minutes = int(duration_match.group(1))
+            seconds = int(duration_match.group(2))
+            duration = minutes * 60 + seconds
+        
+        return {
+            'found': True,
+            'title': track_title,
+            'artist': track_artist,
+            'url': track_url,
+            'cover_url': cover_url,
+            'duration': duration,
+            'duration_str': f"{duration//60}:{duration%60:02d}" if duration else None,
+            'source': 'yandex_music'
+        }
+        
+    except Exception as e:
+        logger.error(f"Ошибка поиска в Яндекс Музыке: {e}")
+        return None
 
 def parse_yandex_track_element(element) -> Optional[Dict[str, Any]]:
     try:
@@ -1076,31 +1173,103 @@ def search_all_albums(query: str, max_pages: int = 10) -> List[Dict[str, Any]]:
 
 # === ФУНКЦИЯ ПОИСКА ТРЕКА ===
 def search_track_full(query: str) -> Optional[Dict[str, Any]]:
+    """Поиск трека: СНАЧАЛА Яндекс Музыка → Deezer → Apple Music"""
     try:
+        # Определяем исполнителя и название
+        artist = None
+        title = query
+        
+        if ' - ' in query or ' — ' in query:
+            sep = ' - ' if ' - ' in query else ' — '
+            parts = query.split(sep)
+            if len(parts) >= 2:
+                artist = parts[0].strip()
+                title = parts[1].strip()
+        else:
+            known_artists = ['асия', 'кино', 'земфира', 'моргенштерн', 'платина', 'big baby tape', 'imagine dragons']
+            for known in known_artists:
+                if known in query.lower():
+                    artist = known
+                    for word in query.split():
+                        if word.lower() == known:
+                            artist = word
+                            break
+                    title = query.lower().replace(known, '').strip()
+                    break
+        
+        # ===== 1. ПОИСК В ЯНДЕКС МУЗЫКЕ =====
+        if artist:
+            logger.info(f"🔍 Поиск в Яндекс Музыке: {artist} — {title}")
+            yandex_result = search_yandex_music_track(artist, title)
+            
+            if yandex_result and yandex_result.get('found'):
+                yandex_artist = yandex_result.get('artist', '').lower()
+                if artist.lower() in yandex_artist or yandex_artist in artist.lower():
+                    logger.info(f"✅ Найдено в Яндекс Музыке: {yandex_result['title']} — {yandex_result['artist']}")
+                    return create_track_data_from_yandex(yandex_result, query)
+        
+        # ===== 2. ПОИСК В DEEZER =====
         all_tracks = search_all_tracks(query, max_pages=10)
         
         if all_tracks:
-            query_lower = query.lower()
+            if artist:
+                for track in all_tracks:
+                    track_title = track.get('title', '').lower()
+                    artist_name = track.get('artist', {}).get('name', '').lower()
+                    
+                    if artist.lower() in artist_name:
+                        if title.lower() in track_title or track_title in title.lower():
+                            logger.info(f"✅ Найдено в Deezer: {track_title} — {artist_name}")
+                            return parse_track_data(track)
             
             for track in all_tracks:
                 track_title = track.get('title', '').lower()
                 artist_name = track.get('artist', {}).get('name', '').lower()
                 
-                if track_title == query_lower or query_lower in track_title:
-                    return parse_track_data(track)
-                
-                if query_lower.isdigit() and query_lower in track_title:
-                    return parse_track_data(track)
+                if title.lower() in track_title or track_title in title.lower():
+                    if artist:
+                        if artist.lower() in artist_name:
+                            return parse_track_data(track)
+                    else:
+                        return parse_track_data(track)
             
             return parse_track_data(all_tracks[0])
         
+        # ===== 3. РЕЗЕРВ: APPLE MUSIC =====
         logger.info('Deezer не дал результатов, используем Apple Search API')
         return search_itunes_track(query)
         
     except Exception as e:
         logger.error(f"Ошибка в search_track_full: {e}")
-        logger.info('Поиск Deezer завершился ошибкой, используем Apple Search API')
-        return search_itunes_track(query)
+        return None
+# ============================================================
+# === СОЗДАНИЕ TRACK_DATA ИЗ ЯНДЕКС МУЗЫКИ ===
+# ============================================================
+
+def create_track_data_from_yandex(yandex_result: Dict, query: str) -> Dict[str, Any]:
+    """Создаёт track_data из результата Яндекс Музыки"""
+    return {
+        'title': yandex_result['title'],
+        'artists': yandex_result['artist'],
+        'main_artist': yandex_result['artist'],
+        'album': 'Неизвестный альбом',
+        'year': None,
+        'release_date': None,
+        'formatted_date': None,
+        'track_id': 0,
+        'duration': yandex_result.get('duration', 0),
+        'duration_str': yandex_result.get('duration_str', '0:00'),
+        'cover_url': yandex_result.get('cover_url'),
+        'preview_url': None,
+        'explicit': False,
+        'source': 'yandex_music',
+        'links': {
+            'yandex': yandex_result['url'],
+            'youtube_music': f"https://music.youtube.com/search?q={urllib.parse.quote(query)}",
+            'youtube': f"https://www.youtube.com/results?search_query={urllib.parse.quote(query + ' music')}",
+            'deezer': None
+        }
+    }
 
 # === ФУНКЦИЯ ПОИСКА АЛЬБОМА ===
 def search_album_full(query: str) -> Optional[Dict[str, Any]]:
