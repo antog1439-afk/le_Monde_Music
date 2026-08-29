@@ -15,15 +15,7 @@ from bs4 import BeautifulSoup
 import io
 
 import telebot
-from telebot.types import (
-    Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    WebAppInfo,
-    BotCommand,
-)
+from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, BotCommand
 
 # === ПЫТАЕМСЯ ИМПОРТИРОВАТЬ PIL ДЛЯ ГЕНЕРАЦИИ ОБЛОЖЕК ===
 try:
@@ -959,6 +951,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
         title = query
         
         # ===== 1. ОПРЕДЕЛЯЕМ ИСПОЛНИТЕЛЯ И НАЗВАНИЕ =====
+        # Если в запросе есть " - " или " — "
         if ' - ' in query or ' — ' in query:
             sep = ' - ' if ' - ' in query else ' — '
             parts = query.split(sep)
@@ -966,6 +959,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
                 artist = parts[0].strip()
                 title = parts[1].strip()
         else:
+            # Проверяем известных исполнителей
             known_artists = [
                 'асия', 'кино', 'земфира', 'моргенштерн', 'платина', 
                 'big baby tape', 'imagine dragons', 'скриптонит', 
@@ -974,6 +968,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
             for known in known_artists:
                 if known in query.lower():
                     artist = known
+                    # Находим оригинальное написание из запроса
                     for word in query.split():
                         if word.lower() == known:
                             artist = word
@@ -981,6 +976,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
                     title = query.lower().replace(known, '').strip()
                     break
             
+            # Если не нашли в базе — считаем первое слово исполнителем
             if not artist and len(parts) > 1:
                 artist = parts[0]
                 title = ' '.join(parts[1:])
@@ -991,6 +987,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
             yandex_result = search_yandex_music_track(artist, title)
             if yandex_result and yandex_result.get('found'):
                 yandex_artist = yandex_result.get('artist', '').lower()
+                # Проверяем совпадение исполнителя
                 if artist.lower() in yandex_artist or yandex_artist in artist.lower():
                     logger.info(f"✅ Найдено в Яндекс Музыке: {yandex_result['title']} — {yandex_result['artist']}")
                     
@@ -1026,6 +1023,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
         if all_tracks:
             query_lower = query.lower()
             
+            # Определяем поисковые параметры
             search_artist = None
             search_title = query_lower
             
@@ -1036,6 +1034,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
                     search_artist = parts[0].lower().strip()
                     search_title = parts[1].lower().strip()
             else:
+                # Проверяем известных исполнителей
                 known_artists = ['асия', 'кино', 'земфира', 'моргенштерн', 'платина', 'big baby tape', 'imagine dragons']
                 for known in known_artists:
                     if known in query_lower:
@@ -1043,12 +1042,14 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
                         search_title = query_lower.replace(known, '').strip()
                         break
                 
+                # Если не нашли — берем первое слово как исполнителя
                 if not search_artist:
                     parts = query_lower.split()
                     if len(parts) > 1:
                         search_artist = parts[0]
                         search_title = ' '.join(parts[1:])
             
+            # === СНАЧАЛА ИЩЕМ ТОЧНОЕ СОВПАДЕНИЕ ===
             # 1. По исполнителю и названию
             for track in all_tracks:
                 track_title = track.get('title', '').lower()
@@ -1059,7 +1060,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
                         logger.info(f"✅ Точное совпадение в Deezer: {track_title} — {artist_name}")
                         return parse_track_data(track)
             
-            # 2. По названию
+            # 2. По названию (если исполнитель совпадает)
             for track in all_tracks:
                 track_title = track.get('title', '').lower()
                 artist_name = track.get('artist', {}).get('name', '').lower()
@@ -1070,7 +1071,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
                             logger.info(f"✅ Совпадение по названию: {track_title} — {artist_name}")
                             return parse_track_data(track)
             
-            # 3. Любой трек исполнителя
+            # 3. Если есть исполнитель — ищем любой его трек
             if search_artist:
                 for track in all_tracks:
                     artist_name = track.get('artist', {}).get('name', '').lower()
@@ -1078,6 +1079,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
                         logger.info(f"✅ Найден трек исполнителя: {track.get('title', '')} — {artist_name}")
                         return parse_track_data(track)
             
+            # === ЕСЛИ НИЧЕГО НЕ НАШЛИ — ВОЗВРАЩАЕМ ПЕРВЫЙ ===
             logger.warning(f"⚠️ Точного совпадения нет, возвращаем первый трек")
             return parse_track_data(all_tracks[0])
         
@@ -1168,6 +1170,7 @@ def generate_short_callback(action: str, track_id: int, artist: str = "", title:
     global callback_counter
     callback_counter += 1
     
+    # Обрезаем слишком длинные названия
     if len(title) > 20:
         title = title[:20]
     
@@ -1175,8 +1178,8 @@ def generate_short_callback(action: str, track_id: int, artist: str = "", title:
     
     callback_storage[callback] = {
         'track_id': track_id,
-        'artist': artist[:30] if artist else '',
-        'title': title[:30] if title else '',
+        'artist': artist[:30] if artist else '',  # Обрезаем
+        'title': title[:30] if title else '',     # Обрезаем
         'action': action
     }
     
@@ -2493,6 +2496,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     
     artist_name = track_info['main_artist']
     
+    # ===== НОВОЕ: ПРОВЕРЯЕМ ПРЕДСТОЯЩИЙ РЕЛИЗ =====
     upcoming_release = get_upcoming_release(artist_name)
     
     track_text = (
@@ -2535,6 +2539,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     else:
         track_text += f"\n\n🤖 <b>ИИ-факт:</b>\n{ai_fact}"
     
+    # ===== НОВОЕ: ДОБАВЛЯЕМ ИНФОРМАЦИЮ О ПРЕДСТОЯЩЕМ РЕЛИЗЕ =====
     if upcoming_release and upcoming_release.get('has_upcoming'):
         days = upcoming_release.get('days_left', 0)
         
@@ -2556,6 +2561,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     
     track_text += f"\n\n🎧 <b>Слушать на платформах:</b>"
     
+    # ===== КЛАВИАТУРА (остаётся без изменений) =====
     keyboard = InlineKeyboardMarkup(row_width=2)
     
     platform_buttons = []
@@ -3217,7 +3223,9 @@ def handle_callback(call):
         # ============================================================
         if call.data.startswith('ft_'):
             track_id = int(call.data.replace('ft_', ''))
+            # Меняем данные call на полный формат
             call.data = f"full_track_{track_id}"
+            # Продолжаем выполнение (не возвращаем, чтобы обработалось дальше)
 
         # === НОВЫЙ ОБРАБОТЧИК ДЛЯ ПОИСКА ПО ИСПОЛНИТЕЛЮ ===
         if call.data.startswith('search_artist_'):
@@ -3231,7 +3239,7 @@ def handle_callback(call):
             
             fake_msg = FakeMessage(call.message.chat.id, artist_name)
             handle_message(fake_msg)
-            return
+            return  # ← ДОБАВЛЕН return
 
         if call.data.startswith('bio_from_release_'):
             artist_name = urllib.parse.unquote(call.data.replace('bio_from_release_', ''))
@@ -3292,6 +3300,7 @@ def handle_callback(call):
             return
         
         if call.data.startswith('full_track_'):
+            # Полная логика обработки полного трека
             try:
                 track_id = int(call.data.replace('full_track_', ''))
                 track_info = user_track_cache.get(track_id)
@@ -3790,7 +3799,9 @@ def get_artist_new_release(artist_name: str) -> Optional[Dict[str, Any]]:
         return None
 
 def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
+    """Проверяет, есть ли у исполнителя предстоящий релиз (сначала Яндекс Музыка)"""
     try:
+        # ===== 1. СНАЧАЛА ПРОВЕРЯЕМ ЯНДЕКС МУЗЫКУ =====
         encoded_name = urllib.parse.quote(artist_name)
         url = f"https://music.yandex.ru/artist/{encoded_name}"
         
@@ -3804,11 +3815,13 @@ def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
+            # Ищем будущие релизы
             upcoming = soup.find_all(['div', 'a'], class_=re.compile(r'upcoming|future|release|soon|preorder', re.I))
             
             for item in upcoming:
                 text = item.get_text(' ', strip=True)
                 
+                # Ищем дату
                 date_match = re.search(r'(\d{1,2}\s+[а-я]+\s+\d{4}|\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})', text, re.IGNORECASE)
                 
                 if date_match:
@@ -3816,20 +3829,24 @@ def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
                     try:
                         for fmt in ['%d %B %Y', '%d %b %Y', '%d.%m.%Y', '%Y-%m-%d', '%d %B %Y года']:
                             try:
+                                # Очищаем строку от лишнего
                                 clean_date = re.sub(r'года|year', '', date_str).strip()
                                 release_dt = datetime.strptime(clean_date, fmt)
                                 now = datetime.now()
                                 days_diff = (release_dt - now).days
                                 
+                                # Если релиз в будущем (через 0-30 дней)
                                 if 0 <= days_diff <= 30:
                                     title_elem = item.find(class_=re.compile(r'title|name', re.I))
                                     title = title_elem.text.strip() if title_elem else 'Новый релиз'
                                     
+                                    # Ищем обложку
                                     img_elem = item.find('img')
                                     cover_url = None
                                     if img_elem:
                                         cover_url = img_elem.get('src') or img_elem.get('data-src')
                                     
+                                    # Ищем ссылку
                                     link_elem = item.find('a', href=re.compile(r'/album/|/track/', re.I))
                                     link = None
                                     if link_elem:
@@ -3853,6 +3870,7 @@ def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
                     except:
                         pass
         
+        # ===== 2. ЕСЛИ В ЯНДЕКС НЕ НАШЛИ — ПРОВЕРЯЕМ DEEZER =====
         search_url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(artist_name)}&limit=1"
         response = requests.get(search_url, timeout=15)
         
@@ -4016,8 +4034,10 @@ def check_and_notify_new_releases():
 
 @bot.message_handler(commands=['checkreleases'])
 def check_releases_command(message: Message):
+    """Проверяет предстоящие релизы у исполнителя"""
     query = message.text.replace('/checkreleases', '', 1).strip()
     
+    # Если есть аргумент — проверяем конкретного исполнителя
     if query:
         try:
             bot.send_chat_action(message.chat.id, 'typing')
@@ -4102,6 +4122,7 @@ def check_releases_command(message: Message):
             bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
             return
     
+    # Если нет аргумента — проверяем все подписки пользователя
     try:
         bot.send_chat_action(message.chat.id, 'typing')
         status_msg = bot.reply_to(message, "🔍 Проверяем релизы для ваших подписок...")
@@ -4175,6 +4196,7 @@ def check_releases_command(message: Message):
 
 # === ФУНКЦИЯ ДЛЯ ПОВТОРНОГО ПОДКЛЮЧЕНИЯ ===
 def run_bot_with_retry():
+    # ===== УДАЛЯЕМ WEBHOOK ПЕРЕД ЗАПУСКОМ =====
     try:
         bot.remove_webhook()
         logger.info("✅ Webhook удалён")
@@ -4199,13 +4221,12 @@ def run_bot_with_retry():
     
     if retry_count >= max_retries:
         logger.error("❌ Превышено максимальное количество попыток подключения")
-
 # === ФУНКЦИЯ ДЛЯ ФОНОВОЙ ПРОВЕРКИ НОВЫХ РЕЛИЗОВ ===
 def start_release_checker():
     def check_loop():
         while True:
             try:
-                time.sleep(3600 * 6)
+                time.sleep(3600 * 6)  # 6 часов
                 check_and_notify_new_releases()
             except Exception as e:
                 logger.error(f"Ошибка в фоновой проверке: {e}")
