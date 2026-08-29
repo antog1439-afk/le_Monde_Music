@@ -15,7 +15,15 @@ from bs4 import BeautifulSoup
 import io
 
 import telebot
-from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, BotCommand
+from telebot.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    WebAppInfo,
+    BotCommand,
+)
 
 # === ПЫТАЕМСЯ ИМПОРТИРОВАТЬ PIL ДЛЯ ГЕНЕРАЦИИ ОБЛОЖЕК ===
 try:
@@ -1543,12 +1551,6 @@ def send_artist_bio(message: Message, artist_name: str):
         url=f"https://music.youtube.com/search?q={urllib.parse.quote(info['name'])}"
     ))
     
-    if MINI_APP_URL:
-        keyboard.add(InlineKeyboardButton(
-            "📱 Открыть Mini App",
-            web_app=WebAppInfo(url=MINI_APP_URL)
-        ))
-    
     concert_info = check_concerts_yandex_music(artist_name)
     encoded_name = urllib.parse.quote(artist_name)
     keyboard.add(InlineKeyboardButton(
@@ -2640,8 +2642,8 @@ def send_welcome(message: Message):
     markup = None
     if MINI_APP_URL:
         welcome_text += "\n\n📱 <b>Открыть Mini App:</b>"
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton(
+        markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
+        markup.add(KeyboardButton(
             "📱 Открыть Mini App",
             web_app=WebAppInfo(url=MINI_APP_URL)
         ))
@@ -3426,67 +3428,36 @@ def handle_web_app(message: Message):
             logger.info(f"🔍 Поиск в Mini App: {query}")
             
             if not query or len(query) < 1:
-                bot.send_message(message.chat.id, json.dumps({
-                    'type': 'search_result',
-                    'track': None,
-                    'error': 'Слишком короткий запрос'
-                }))
+                bot.send_message(message.chat.id, '❌ Введите название трека или исполнителя')
                 return
+
+            status_msg = bot.send_message(message.chat.id, f"🔍 Ищу: {query}")
             
             track_info = search_track_with_retry(query)
             
             if track_info:
-                ai_fact = generate_ai_fact(track_info['main_artist'], track_info['title'])
-                song_meaning = get_song_meaning(track_info['title'], track_info['main_artist'])
-                
-                result = {
-                    'type': 'search_result',
-                    'track': {
-                        'title': track_info['title'],
-                        'artists': track_info['artists'],
-                        'album': track_info['album'],
-                        'year': track_info.get('year'),
-                        'release_date': track_info.get('formatted_date') or track_info.get('release_date'),
-                        'relative_time': get_relative_time(track_info.get('release_date')) if track_info.get('release_date') else None,
-                        'duration': track_info['duration_str'],
-                        'main_artist': track_info['main_artist'],
-                        'links': track_info['links'],
-                        'preview_url': track_info.get('preview_url'),
-                        'cover_url': track_info.get('cover_url'),
-                        'ai_fact': ai_fact,
-                        'song_meaning': song_meaning['meaning'] if song_meaning else None,
-                        'song_emotion': song_meaning['emotion'] if song_meaning else None
-                    }
-                }
-                
-                bot.send_message(message.chat.id, json.dumps(result))
+                try:
+                    bot.delete_message(message.chat.id, status_msg.message_id)
+                except Exception:
+                    pass
+                send_track_result(message, track_info)
                 logger.info(f"✅ Трек найден: {track_info['title']}")
                 return
             
             album_info = search_album_with_retry(query)
             if album_info:
-                result = {
-                    'type': 'album_result',
-                    'album': {
-                        'title': album_info['title'],
-                        'artist': album_info['artist'],
-                        'year': album_info.get('year'),
-                        'release_date': format_release_date(album_info.get('release_date')),
-                        'relative_time': get_relative_time(album_info.get('release_date')) if album_info.get('release_date') else None,
-                        'track_count': album_info.get('track_count', 0),
-                        'cover_url': album_info.get('cover_url'),
-                        'link': album_info['link'],
-                        'tracks': [{'title': t['title']} for t in album_info.get('tracks', [])[:5]]
-                    }
-                }
-                bot.send_message(message.chat.id, json.dumps(result))
+                try:
+                    bot.delete_message(message.chat.id, status_msg.message_id)
+                except Exception:
+                    pass
+                send_album_result(message, album_info)
                 logger.info(f"💿 Альбом найден: {album_info['title']}")
             else:
-                bot.send_message(message.chat.id, json.dumps({
-                    'type': 'search_result',
-                    'track': None,
-                    'error': f'Ничего не найдено по запросу "{query}"'
-                }))
+                try:
+                    bot.delete_message(message.chat.id, status_msg.message_id)
+                except Exception:
+                    pass
+                bot.send_message(message.chat.id, f'❌ Ничего не найдено по запросу «{query}»')
                 logger.warning(f"❌ Ничего не найдено: {query}")
         
         elif action == 'subscribe_artist':
@@ -3494,32 +3465,20 @@ def handle_web_app(message: Message):
             user_id = str(message.from_user.id)
             
             if not artist_name:
-                bot.send_message(message.chat.id, json.dumps({
-                    'type': 'subscribe_result',
-                    'success': False,
-                    'message': 'Укажите имя исполнителя'
-                }))
+                bot.send_message(message.chat.id, '❌ Укажите имя исполнителя')
                 return
             
             if user_id not in user_subscriptions:
                 user_subscriptions[user_id] = []
             
             if any(a['name'].lower() == artist_name.lower() for a in user_subscriptions[user_id]):
-                bot.send_message(message.chat.id, json.dumps({
-                    'type': 'subscribe_result',
-                    'success': False,
-                    'message': f'Вы уже подписаны на {artist_name}'
-                }))
+                bot.send_message(message.chat.id, f'ℹ️ Вы уже подписаны на {artist_name}')
             else:
                 user_subscriptions[user_id].append({'name': artist_name})
                 with open(SUBSCRIPTIONS_FILE, 'w', encoding='utf-8') as f:
                     json.dump(user_subscriptions, f, ensure_ascii=False, indent=2)
                 
-                bot.send_message(message.chat.id, json.dumps({
-                    'type': 'subscribe_result',
-                    'success': True,
-                    'message': f'Подписка на {artist_name} оформлена!'
-                }))
+                bot.send_message(message.chat.id, f'🔔 Подписка на {artist_name} оформлена!')
         
         else:
             logger.warning(f"⚠️ Неизвестное действие: {action}")
@@ -3527,10 +3486,7 @@ def handle_web_app(message: Message):
     except Exception as e:
         logger.error(f"❌ Ошибка в web_app: {e}")
         try:
-            bot.send_message(message.chat.id, json.dumps({
-                'type': 'error',
-                'message': str(e)
-            }))
+            bot.send_message(message.chat.id, '❌ Не удалось обработать запрос Mini App')
         except:
             pass
 

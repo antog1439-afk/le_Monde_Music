@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#11131a">
+  <title>Le Monde Music</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="brand-mark" aria-hidden="true">LM</div>
+      <div>
+        <p class="eyebrow">LE MONDE MUSIC</p>
+        <h1>Музыка ближе</h1>
+        <p class="subtitle">Найдите трек или подпишитесь на любимого исполнителя.</p>
+      </div>
+    </header>
+
+    <section class="panel" aria-labelledby="search-title">
+      <div class="section-heading">
+        <span class="section-icon" aria-hidden="true">⌕</span>
+        <div>
+          <h2 id="search-title">Поиск музыки</h2>
+          <p>Результат придёт сообщением в чат с ботом.</p>
+        </div>
+      </div>
+      <form id="search-form">
+        <label for="search-query">Трек, альбом или исполнитель</label>
+        <div class="input-row">
+          <input id="search-query" name="query" type="search" maxlength="120"
+                 placeholder="Например, Кино — Группа крови" autocomplete="off" required>
+          <button type="submit">Найти</button>
+        </div>
+      </form>
+      <div class="quick-list" aria-label="Примеры запросов">
+        <button type="button" data-query="Кино Группа крови">Кино</button>
+        <button type="button" data-query="Imagine Dragons Believer">Imagine Dragons</button>
+        <button type="button" data-query="Асия Останься">Асия</button>
+      </div>
+    </section>
+
+    <section class="panel secondary" aria-labelledby="subscribe-title">
+      <div class="section-heading">
+        <span class="section-icon" aria-hidden="true">＋</span>
+        <div>
+          <h2 id="subscribe-title">Подписка на релизы</h2>
+          <p>Бот сообщит о новых релизах исполнителя.</p>
+        </div>
+      </div>
+      <form id="subscribe-form">
+        <label for="artist-name">Имя исполнителя</label>
+        <div class="input-row">
+          <input id="artist-name" name="artist" type="text" maxlength="100"
+                 placeholder="Например, Земфира" autocomplete="off" required>
+          <button type="submit" class="secondary-button">Подписаться</button>
+        </div>
+      </form>
+    </section>
+
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </main>
+</body>
+</html>
