@@ -40,33 +40,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # === ТОКЕНЫ ===
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '').strip()
-if not TELEGRAM_TOKEN:
-    raise RuntimeError('Переменная окружения TELEGRAM_TOKEN не задана')
-
+TELEGRAM_TOKEN = '8586892813:AAE3qgxUtGTfA6kefeuOlPy2bNypojFj6Sw'
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # === НАСТРОЙКИ ===
 CACHE_DURATION = 3600
-DATA_DIR = os.getenv('DATA_DIR', '.').strip() or '.'
-SUBSCRIPTIONS_FILE = os.getenv(
-    'SUBSCRIPTIONS_FILE',
-    os.path.join(DATA_DIR, 'user_subscriptions.json')
-)
-RELEASE_CHECK_FILE = os.path.join(DATA_DIR, 'last_release_check.json')
-MINI_APP_URL = os.getenv('MINI_APP_URL', '').strip()
-mini_app_url_parts = urllib.parse.urlparse(MINI_APP_URL)
-if MINI_APP_URL and (
-    mini_app_url_parts.scheme != 'https' or not mini_app_url_parts.netloc
-):
-    logger.warning('⚠️ MINI_APP_URL должен начинаться с https://; кнопка Mini App отключена')
-    MINI_APP_URL = ''
-
-ITUNES_COUNTRY = os.getenv('ITUNES_COUNTRY', 'RU').strip().upper()
-if not re.fullmatch(r'[A-Z]{2}', ITUNES_COUNTRY):
-    logger.warning('⚠️ Некорректный ITUNES_COUNTRY; используется RU')
-    ITUNES_COUNTRY = 'RU'
-
+SUBSCRIPTIONS_FILE = 'user_subscriptions.json'
 MAX_RETRIES = 5
 RETRY_DELAY = 5
 CONCERTS_CACHE_DURATION = 3600
@@ -391,6 +370,63 @@ def get_cover_data(track_info: Dict[str, Any]) -> Optional[bytes]:
     
     return generate_fallback_cover(artist, title)
 
+def search_yandex_music_track(artist: str, title: str) -> Optional[Dict[str, Any]]:
+    """Ищет трек в Яндекс Музыке (возвращает информацию о треке)"""
+    try:
+        query = f"{artist} {title}"
+        encoded = urllib.parse.quote(query)
+        url = f"https://music.yandex.ru/search?text={encoded}&type=all"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Ищем трек
+        track_link = soup.find('a', href=re.compile(r'/track/\d+'))
+        if track_link:
+            href = track_link.get('href')
+            if href:
+                track_url = 'https://music.yandex.ru' + href if href.startswith('/') else href
+                
+                # Пробуем найти название
+                title_elem = soup.find('div', class_=re.compile(r'title|name|track', re.I))
+                artist_elem = soup.find('div', class_=re.compile(r'artist|performer|author', re.I))
+                
+                track_title = title_elem.text.strip() if title_elem else title
+                track_artist = artist_elem.text.strip() if artist_elem else artist
+                
+                # Пробуем найти длительность
+                duration_match = re.search(r'(\d+):(\d{2})', soup.text)
+                duration = None
+                if duration_match:
+                    minutes = int(duration_match.group(1))
+                    seconds = int(duration_match.group(2))
+                    duration = minutes * 60 + seconds
+                
+                return {
+                    'found': True,
+                    'title': track_title,
+                    'artist': track_artist,
+                    'url': track_url,
+                    'duration': duration,
+                    'duration_str': f"{duration//60}:{duration%60:02d}" if duration else None,
+                    'source': 'yandex_music'
+                }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Ошибка поиска в Яндекс Музыке: {e}")
+        return None
+
 # ====================================================
 # === ОБНОВЛЁННАЯ ФУНКЦИЯ СКАЧИВАНИЯ ПОЛНОГО ТРЕКА ===
 # ====================================================
@@ -712,110 +748,7 @@ def search_yandex_music(query: str, limit: int = 30) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Ошибка поиска в Яндекс Музыке: {e}")
         return results
-        
-def search_yandex_music_track(artist: str, title: str) -> Optional[Dict[str, Any]]:
-    """Ищет трек в Яндекс Музыке через прямой поиск (упрощённый)"""
-    try:
-        query = f"{artist} {title}"
-        encoded = urllib.parse.quote(query)
-        url = f"https://music.yandex.ru/search?text={encoded}&type=all"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-        }
-        
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200:
-            return None
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Ищем ссылку на трек
-        track_link = soup.find('a', href=re.compile(r'/track/\d+'))
-        if not track_link:
-            return None
-        
-        href = track_link.get('href')
-        if not href:
-            return None
-        
-        if href.startswith('/'):
-            track_url = 'https://music.yandex.ru' + href
-        else:
-            track_url = href
-        
-        # Пробуем найти название и исполнителя через JSON-LD
-        track_title = None
-        track_artist = None
-        
-        scripts = soup.find_all('script', type='application/ld+json')
-        for script in scripts:
-            try:
-                data = json.loads(script.string)
-                if isinstance(data, dict):
-                    if data.get('@type') == 'MusicRecording':
-                        track_title = data.get('name')
-                        track_artist = data.get('artist', {}).get('name')
-                        break
-                    elif data.get('@type') == 'ItemList' and data.get('itemListElement'):
-                        for item in data.get('itemListElement', []):
-                            if item.get('item', {}).get('@type') == 'MusicRecording':
-                                track_title = item['item'].get('name')
-                                track_artist = item['item'].get('artist', {}).get('name')
-                                break
-            except:
-                pass
-        
-        # Если не нашли через JSON — берём из заголовка
-        if not track_title or not track_artist:
-            title_tag = soup.find('title')
-            if title_tag:
-                text = title_tag.text.strip()
-                # Формат: "Название — Исполнитель слушать онлайн на Яндекс Музыке"
-                match = re.search(r'(.+?)\s*[—\-]\s*(.+?)\s*(?:слушать|на Яндекс|$)', text)
-                if match:
-                    track_title = match.group(1).strip()
-                    track_artist = match.group(2).strip()
-        
-        if not track_title:
-            track_title = title
-        if not track_artist:
-            track_artist = artist
-        
-        # Ищем обложку
-        cover_url = None
-        img = soup.find('img', class_=re.compile(r'cover|image|album', re.I))
-        if img:
-            cover_url = img.get('src') or img.get('data-src')
-            if cover_url and cover_url.startswith('//'):
-                cover_url = 'https:' + cover_url
-            cover_url = re.sub(r'/\d+x\d+/', '/400x400/', cover_url)
-        
-        # Ищем длительность
-        duration = None
-        duration_match = re.search(r'(\d+):(\d{2})', soup.text)
-        if duration_match:
-            minutes = int(duration_match.group(1))
-            seconds = int(duration_match.group(2))
-            duration = minutes * 60 + seconds
-        
-        return {
-            'found': True,
-            'title': track_title,
-            'artist': track_artist,
-            'url': track_url,
-            'cover_url': cover_url,
-            'duration': duration,
-            'duration_str': f"{duration//60}:{duration%60:02d}" if duration else None,
-            'source': 'yandex_music'
-        }
-        
-    except Exception as e:
-        logger.error(f"Ошибка поиска в Яндекс Музыке: {e}")
-        return None
-        
+
 def parse_yandex_track_element(element) -> Optional[Dict[str, Any]]:
     try:
         text = element.get_text(' ', strip=True)
@@ -901,159 +834,6 @@ def parse_yandex_album_element(element, query: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         return None
 
-# === РЕЗЕРВНЫЙ ПОИСК ЧЕРЕЗ APPLE SEARCH API ===
-def get_itunes_artwork_url(url: Optional[str], size: int = 600) -> Optional[str]:
-    if not url:
-        return None
-    return re.sub(r'/\d+x\d+bb\.', f'/{size}x{size}bb.', url)
-
-def parse_itunes_track_data(track: Dict[str, Any]) -> Dict[str, Any]:
-    artist_name = track.get('artistName', 'Неизвестный исполнитель')
-    track_title = track.get('trackName', 'Без названия')
-    album_title = track.get('collectionName', 'Неизвестный альбом')
-    track_id = int(track.get('trackId', 0))
-    duration = int(track.get('trackTimeMillis', 0) or 0) // 1000
-    release_date = (track.get('releaseDate') or '')[:10]
-    preview_url = track.get('previewUrl')
-    encoded_search = urllib.parse.quote(f'{artist_name} {track_title}')
-
-    result = {
-        'title': track_title,
-        'artists': artist_name,
-        'main_artist': artist_name,
-        'album': album_title,
-        'year': release_date[:4] if release_date else None,
-        'release_date': release_date,
-        'formatted_date': format_release_date(release_date),
-        'track_id': track_id,
-        'links': {
-            'apple_music': track.get('trackViewUrl') or track.get('collectionViewUrl'),
-            'yandex': f'https://music.yandex.ru/search?text={encoded_search}',
-            'youtube_music': f'https://music.youtube.com/search?q={encoded_search}',
-            'youtube': f'https://www.youtube.com/results?search_query={encoded_search}+music',
-            'deezer': f'https://www.deezer.com/search/{encoded_search}',
-        },
-        'preview_url': preview_url,
-        'duration': duration,
-        'duration_str': f'{duration // 60}:{duration % 60:02d}',
-        'cover_url': get_itunes_artwork_url(track.get('artworkUrl100')),
-        'explicit': track.get('trackExplicitness') == 'explicit',
-        'source': 'itunes',
-    }
-
-    result['links'] = {key: value for key, value in result['links'].items() if value}
-    if track_id:
-        user_track_cache[track_id] = result
-        if preview_url:
-            preview_cache[track_id] = preview_url
-    return result
-
-def search_itunes_track(query: str) -> Optional[Dict[str, Any]]:
-    try:
-        response = requests.get(
-            'https://itunes.apple.com/search',
-            params={
-                'term': query,
-                'entity': 'song',
-                'limit': 25,
-                'country': ITUNES_COUNTRY,
-            },
-            timeout=20,
-        )
-        response.raise_for_status()
-        tracks = [
-            item for item in response.json().get('results', [])
-            if item.get('kind') == 'song' and item.get('trackId')
-        ]
-        if not tracks:
-            return None
-
-        query_tokens = set(re.findall(r'[\w]+', query.casefold()))
-
-        def relevance(item: Dict[str, Any]) -> int:
-            searchable = f"{item.get('artistName', '')} {item.get('trackName', '')}".casefold()
-            return sum(token in searchable for token in query_tokens)
-
-        best_track = max(tracks, key=relevance)
-        logger.info('✅ Трек найден через Apple Search API')
-        return parse_itunes_track_data(best_track)
-    except Exception as e:
-        logger.warning(f'Apple Search API недоступен для трека: {e}')
-        return None
-
-def search_itunes_album(query: str) -> Optional[Dict[str, Any]]:
-    try:
-        response = requests.get(
-            'https://itunes.apple.com/search',
-            params={
-                'term': query,
-                'entity': 'album',
-                'limit': 15,
-                'country': ITUNES_COUNTRY,
-            },
-            timeout=20,
-        )
-        response.raise_for_status()
-        albums = [
-            item for item in response.json().get('results', [])
-            if item.get('collectionType') == 'Album' and item.get('collectionId')
-        ]
-        if not albums:
-            return None
-
-        query_tokens = set(re.findall(r'[\w]+', query.casefold()))
-
-        def relevance(item: Dict[str, Any]) -> int:
-            searchable = f"{item.get('artistName', '')} {item.get('collectionName', '')}".casefold()
-            return sum(token in searchable for token in query_tokens)
-
-        album = max(albums, key=relevance)
-        album_id = int(album['collectionId'])
-        release_date = (album.get('releaseDate') or '')[:10]
-        tracks = []
-
-        try:
-            lookup_response = requests.get(
-                'https://itunes.apple.com/lookup',
-                params={
-                    'id': album_id,
-                    'entity': 'song',
-                    'country': ITUNES_COUNTRY,
-                },
-                timeout=20,
-            )
-            lookup_response.raise_for_status()
-            for item in lookup_response.json().get('results', []):
-                if item.get('kind') != 'song' or not item.get('trackId'):
-                    continue
-                parsed_track = parse_itunes_track_data(item)
-                tracks.append({
-                    'id': parsed_track['track_id'],
-                    'title': parsed_track['title'],
-                    'duration': parsed_track['duration'],
-                    'preview': parsed_track['preview_url'],
-                    'artist': parsed_track['main_artist'],
-                })
-        except Exception as e:
-            logger.warning(f'Не удалось загрузить треклист Apple Music: {e}')
-
-        logger.info('✅ Альбом найден через Apple Search API')
-        return {
-            'id': album_id,
-            'title': album.get('collectionName', 'Без названия'),
-            'artist': album.get('artistName', 'Неизвестный исполнитель'),
-            'cover_url': get_itunes_artwork_url(album.get('artworkUrl100')),
-            'year': release_date[:4] if release_date else None,
-            'release_date': release_date,
-            'track_count': album.get('trackCount', len(tracks)),
-            'tracks': tracks[:30],
-            'link': album.get('collectionViewUrl'),
-            'source': 'itunes',
-        }
-    except Exception as e:
-        logger.warning(f'Apple Search API недоступен для альбома: {e}')
-        return None
-
 # === УЛУЧШЕННАЯ ФУНКЦИЯ ПОИСКА ВСЕХ ТРЕКОВ ===
 def search_all_tracks(query: str, max_pages: int = 15) -> List[Dict[str, Any]]:
     all_tracks = []
@@ -1083,13 +863,9 @@ def search_all_tracks(query: str, max_pages: int = 15) -> List[Dict[str, Any]]:
                 response = requests.get(url, timeout=30)
                 
                 if response.status_code != 200:
-                    logger.warning(f'Deezer search вернул HTTP {response.status_code}')
                     break
                 
                 data = response.json()
-
-                if data.get('error'):
-                    logger.warning(f"Deezer search вернул ошибку: {data['error']}")
                 
                 if not data.get('data') or len(data['data']) == 0:
                     break
@@ -1148,13 +924,9 @@ def search_all_albums(query: str, max_pages: int = 10) -> List[Dict[str, Any]]:
                 response = requests.get(url, timeout=30)
                 
                 if response.status_code != 200:
-                    logger.warning(f'Deezer album search вернул HTTP {response.status_code}')
                     break
                 
                 data = response.json()
-
-                if data.get('error'):
-                    logger.warning(f"Deezer album search вернул ошибку: {data['error']}")
                 
                 if not data.get('data') or len(data['data']) == 0:
                     break
@@ -1179,93 +951,141 @@ def search_all_albums(query: str, max_pages: int = 10) -> List[Dict[str, Any]]:
 
 # === ФУНКЦИЯ ПОИСКА ТРЕКА ===
 def search_track_full(query: str) -> Optional[Dict[str, Any]]:
-    """Поиск трека: Deezer → Яндекс Музыка → Apple Music"""
+    """Поиск трека (точное совпадение по исполнителю и названию)"""
     try:
-        # Определяем исполнителя и название
+        parts = query.split()
+        
         artist = None
         title = query
         
+        # ===== 1. ОПРЕДЕЛЯЕМ ИСПОЛНИТЕЛЯ И НАЗВАНИЕ =====
         if ' - ' in query or ' — ' in query:
             sep = ' - ' if ' - ' in query else ' — '
             parts = query.split(sep)
             if len(parts) >= 2:
                 artist = parts[0].strip()
                 title = parts[1].strip()
+        else:
+            known_artists = [
+                'асия', 'кино', 'земфира', 'моргенштерн', 'платина', 
+                'big baby tape', 'imagine dragons', 'скриптонит', 
+                'eminem', 'taylor swift', 'billie eilish'
+            ]
+            for known in known_artists:
+                if known in query.lower():
+                    artist = known
+                    for word in query.split():
+                        if word.lower() == known:
+                            artist = word
+                            break
+                    title = query.lower().replace(known, '').strip()
+                    break
+            
+            if not artist and len(parts) > 1:
+                artist = parts[0]
+                title = ' '.join(parts[1:])
         
-        # ===== 1. ПОИСК В DEEZER (САМЫЙ ТОЧНЫЙ) =====
+        # ===== 2. ПОИСК В ЯНДЕКС МУЗЫКЕ =====
+        if artist:
+            logger.info(f"🔍 Поиск в Яндекс: {artist} — {title}")
+            yandex_result = search_yandex_music_track(artist, title)
+            if yandex_result and yandex_result.get('found'):
+                yandex_artist = yandex_result.get('artist', '').lower()
+                if artist.lower() in yandex_artist or yandex_artist in artist.lower():
+                    logger.info(f"✅ Найдено в Яндекс Музыке: {yandex_result['title']} — {yandex_result['artist']}")
+                    
+                    track_data = {
+                        'title': yandex_result['title'],
+                        'artists': yandex_result['artist'],
+                        'main_artist': yandex_result['artist'],
+                        'album': 'Неизвестный альбом',
+                        'year': None,
+                        'release_date': None,
+                        'formatted_date': None,
+                        'track_id': 0,
+                        'duration': yandex_result.get('duration', 0),
+                        'duration_str': yandex_result.get('duration_str', '0:00'),
+                        'cover_url': None,
+                        'preview_url': None,
+                        'explicit': False,
+                        'source': 'yandex_music',
+                        'links': {
+                            'yandex': yandex_result['url'],
+                            'youtube_music': f"https://music.youtube.com/search?q={urllib.parse.quote(query)}",
+                            'youtube': f"https://www.youtube.com/results?search_query={urllib.parse.quote(query + ' music')}",
+                            'deezer': None
+                        }
+                    }
+                    user_track_cache[0] = track_data
+                    return track_data
+        
+        # ===== 3. ПОИСК В DEEZER С ТОЧНЫМ СОВПАДЕНИЕМ =====
+        logger.info(f"🔍 Поиск в Deezer: {query}")
         all_tracks = search_all_tracks(query, max_pages=10)
         
         if all_tracks:
-            # Точное совпадение по исполнителю
-            if artist:
-                for track in all_tracks:
-                    track_title = track.get('title', '').lower()
-                    artist_name = track.get('artist', {}).get('name', '').lower()
-                    
-                    if artist.lower() in artist_name:
-                        if title.lower() in track_title or track_title in title.lower():
-                            logger.info(f"✅ Найдено в Deezer: {track_title} — {artist_name}")
-                            return parse_track_data(track)
+            query_lower = query.lower()
             
-            # Поиск по названию
+            search_artist = None
+            search_title = query_lower
+            
+            if ' - ' in query or ' — ' in query:
+                sep = ' - ' if ' - ' in query else ' — '
+                parts = query.split(sep)
+                if len(parts) >= 2:
+                    search_artist = parts[0].lower().strip()
+                    search_title = parts[1].lower().strip()
+            else:
+                known_artists = ['асия', 'кино', 'земфира', 'моргенштерн', 'платина', 'big baby tape', 'imagine dragons']
+                for known in known_artists:
+                    if known in query_lower:
+                        search_artist = known
+                        search_title = query_lower.replace(known, '').strip()
+                        break
+                
+                if not search_artist:
+                    parts = query_lower.split()
+                    if len(parts) > 1:
+                        search_artist = parts[0]
+                        search_title = ' '.join(parts[1:])
+            
+            # 1. По исполнителю и названию
             for track in all_tracks:
                 track_title = track.get('title', '').lower()
                 artist_name = track.get('artist', {}).get('name', '').lower()
                 
-                if title.lower() in track_title or track_title in title.lower():
-                    if artist:
-                        if artist.lower() in artist_name:
-                            return parse_track_data(track)
-                    else:
+                if search_artist and search_artist in artist_name:
+                    if search_title in track_title or track_title in search_title:
+                        logger.info(f"✅ Точное совпадение в Deezer: {track_title} — {artist_name}")
                         return parse_track_data(track)
             
+            # 2. По названию
+            for track in all_tracks:
+                track_title = track.get('title', '').lower()
+                artist_name = track.get('artist', {}).get('name', '').lower()
+                
+                if search_title in track_title or track_title in search_title:
+                    if search_artist:
+                        if search_artist in artist_name:
+                            logger.info(f"✅ Совпадение по названию: {track_title} — {artist_name}")
+                            return parse_track_data(track)
+            
+            # 3. Любой трек исполнителя
+            if search_artist:
+                for track in all_tracks:
+                    artist_name = track.get('artist', {}).get('name', '').lower()
+                    if search_artist in artist_name:
+                        logger.info(f"✅ Найден трек исполнителя: {track.get('title', '')} — {artist_name}")
+                        return parse_track_data(track)
+            
+            logger.warning(f"⚠️ Точного совпадения нет, возвращаем первый трек")
             return parse_track_data(all_tracks[0])
         
-        # ===== 2. ПОИСК В ЯНДЕКС МУЗЫКЕ (ЕСЛИ DEEZER НЕ НАШЁЛ) =====
-        if artist:
-            logger.info(f"🔍 Deezer не нашёл, ищем в Яндекс Музыке: {artist} — {title}")
-            yandex_result = search_yandex_music_track(artist, title)
-            
-            if yandex_result and yandex_result.get('found'):
-                logger.info(f"✅ Найдено в Яндекс Музыке: {yandex_result['title']} — {yandex_result['artist']}")
-                return create_track_data_from_yandex(yandex_result, query)
-        
-        # ===== 3. РЕЗЕРВ: APPLE MUSIC =====
-        logger.info('Deezer и Яндекс не дали результатов, используем Apple Search API')
-        return search_itunes_track(query)
+        return None
         
     except Exception as e:
         logger.error(f"Ошибка в search_track_full: {e}")
         return None
-        
-# ============================================================
-# === СОЗДАНИЕ TRACK_DATA ИЗ ЯНДЕКС МУЗЫКИ ===
-# ============================================================
-
-def create_track_data_from_yandex(yandex_result: Dict, query: str) -> Dict[str, Any]:
-    """Создаёт track_data из результата Яндекс Музыки"""
-    return {
-        'title': yandex_result['title'],
-        'artists': yandex_result['artist'],
-        'main_artist': yandex_result['artist'],
-        'album': 'Неизвестный альбом',
-        'year': None,
-        'release_date': None,
-        'formatted_date': None,
-        'track_id': 0,
-        'duration': yandex_result.get('duration', 0),
-        'duration_str': yandex_result.get('duration_str', '0:00'),
-        'cover_url': yandex_result.get('cover_url'),
-        'preview_url': None,
-        'explicit': False,
-        'source': 'yandex_music',
-        'links': {
-            'yandex': yandex_result['url'],
-            'youtube_music': f"https://music.youtube.com/search?q={urllib.parse.quote(query)}",
-            'youtube': f"https://www.youtube.com/results?search_query={urllib.parse.quote(query + ' music')}",
-            'deezer': None
-        }
-    }
 
 # === ФУНКЦИЯ ПОИСКА АЛЬБОМА ===
 def search_album_full(query: str) -> Optional[Dict[str, Any]]:
@@ -1286,13 +1106,11 @@ def search_album_full(query: str) -> Optional[Dict[str, Any]]:
             
             return process_album_data(all_albums[0])
         
-        logger.info('Deezer не дал альбомов, используем Apple Search API')
-        return search_itunes_album(query)
+        return None
         
     except Exception as e:
         logger.error(f"Ошибка в search_album_full: {e}")
-        logger.info('Поиск альбомов Deezer завершился ошибкой, используем Apple Search API')
-        return search_itunes_album(query)
+        return None
 
 # === ОСТАЛЬНЫЕ ФУНКЦИИ ===
 def get_relative_time(release_date_str: str) -> Optional[str]:
@@ -1350,12 +1168,15 @@ def generate_short_callback(action: str, track_id: int, artist: str = "", title:
     global callback_counter
     callback_counter += 1
     
+    if len(title) > 20:
+        title = title[:20]
+    
     callback = f"{action}_{callback_counter}"
     
     callback_storage[callback] = {
         'track_id': track_id,
-        'artist': artist,
-        'title': title,
+        'artist': artist[:30] if artist else '',
+        'title': title[:30] if title else '',
         'action': action
     }
     
@@ -1364,11 +1185,6 @@ def generate_short_callback(action: str, track_id: int, artist: str = "", title:
 def get_track_preview(track_id: int) -> Optional[str]:
     if track_id in preview_cache:
         return preview_cache[track_id]
-
-    cached_track = user_track_cache.get(track_id, {})
-    if cached_track.get('preview_url'):
-        preview_cache[track_id] = cached_track['preview_url']
-        return cached_track['preview_url']
     
     try:
         url = f"https://api.deezer.com/track/{track_id}"
@@ -1891,6 +1707,11 @@ def send_artist_bio(message: Message, artist_name: str):
         url=f"https://music.youtube.com/search?q={urllib.parse.quote(info['name'])}"
     ))
     
+    keyboard.add(InlineKeyboardButton(
+        "📱 Открыть Mini App",
+        web_app=WebAppInfo(url="https://antog1439-afk.github.io/Muzyka/")
+    ))
+    
     concert_info = check_concerts_yandex_music(artist_name)
     encoded_name = urllib.parse.quote(artist_name)
     keyboard.add(InlineKeyboardButton(
@@ -2371,12 +2192,15 @@ def send_album_detail(message: Message, album_id: int, artist_name: str):
                 text += f"{i}. <b>{track_artist}</b> — {title} ⏱ {duration_str}\n"
             
             if track_id:
+                short_title = title[:15] if len(title) > 15 else title
+                short_artist = track_artist[:15] if len(track_artist) > 15 else track_artist
+
                 play_callback = generate_short_callback('play', track_id, track_artist, title)
-                full_track_callback = f"full_track_{track_id}"
+                full_track_callback = f"ft_{track_id}"
                 
                 keyboard.row(
                     InlineKeyboardButton(f"🎧 30 сек", callback_data=play_callback),
-                    InlineKeyboardButton(f"🎵 Полный — {title[:15]}", callback_data=full_track_callback)
+                    InlineKeyboardButton(f"🎵 Полный — {short_title[:12]}", callback_data=full_track_callback)
                 )
     
     if len(album_tracks) > 30:
@@ -2519,14 +2343,12 @@ def send_album_result(message: Message, album_info: Dict[str, Any]):
     
     platform_buttons = []
     platform_emoji = {
-        'apple_music': '',
         'yandex': '🎵',
         'youtube_music': '▶️',
         'youtube': '📺',
         'deezer': '🎧'
     }
     platform_names = {
-        'apple_music': 'Apple Music',
         'yandex': 'Яндекс.Музыка',
         'youtube_music': 'YouTube Music',
         'youtube': 'YouTube',
@@ -2538,15 +2360,10 @@ def send_album_result(message: Message, album_info: Dict[str, Any]):
         'yandex': f"https://music.yandex.ru/search?text={urllib.parse.quote(search_text)}",
         'youtube_music': f"https://music.youtube.com/search?q={urllib.parse.quote(search_text)}",
         'youtube': f"https://www.youtube.com/results?search_query={urllib.parse.quote(search_text)}+album",
-        'deezer': f"https://www.deezer.com/search/{urllib.parse.quote(search_text)}"
+        'deezer': album_info['link']
     }
-
-    if album_info.get('source') == 'itunes' and album_info.get('link'):
-        links['apple_music'] = album_info['link']
-    elif album_info.get('link'):
-        links['deezer'] = album_info['link']
     
-    for platform in ['apple_music', 'yandex', 'youtube_music', 'youtube', 'deezer']:
+    for platform in ['yandex', 'youtube_music', 'youtube', 'deezer']:
         if platform in links:
             platform_buttons.append(InlineKeyboardButton(
                 f"{platform_emoji.get(platform, '▶️')} {platform_names.get(platform, platform)}",
@@ -2676,7 +2493,6 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     
     artist_name = track_info['main_artist']
     
-    # ===== НОВОЕ: ПРОВЕРЯЕМ ПРЕДСТОЯЩИЙ РЕЛИЗ =====
     upcoming_release = get_upcoming_release(artist_name)
     
     track_text = (
@@ -2719,7 +2535,6 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     else:
         track_text += f"\n\n🤖 <b>ИИ-факт:</b>\n{ai_fact}"
     
-    # ===== НОВОЕ: ДОБАВЛЯЕМ ИНФОРМАЦИЮ О ПРЕДСТОЯЩЕМ РЕЛИЗЕ =====
     if upcoming_release and upcoming_release.get('has_upcoming'):
         days = upcoming_release.get('days_left', 0)
         
@@ -2741,26 +2556,23 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     
     track_text += f"\n\n🎧 <b>Слушать на платформах:</b>"
     
-    # ===== КЛАВИАТУРА (остаётся без изменений) =====
     keyboard = InlineKeyboardMarkup(row_width=2)
     
     platform_buttons = []
     platform_emoji = {
-        'apple_music': '',
         'yandex': '🎵',
         'youtube_music': '▶️',
         'youtube': '📺',
         'deezer': '🎧'
     }
     platform_names = {
-        'apple_music': 'Apple Music',
         'yandex': 'Яндекс.Музыка',
         'youtube_music': 'YouTube Music',
         'youtube': 'YouTube',
         'deezer': 'Deezer'
     }
     
-    for platform in ['apple_music', 'yandex', 'youtube_music', 'youtube', 'deezer']:
+    for platform in ['yandex', 'youtube_music', 'youtube', 'deezer']:
         if platform in track_info['links']:
             platform_buttons.append(InlineKeyboardButton(
                 f"{platform_emoji.get(platform, '▶️')} {platform_names.get(platform, platform)}",
@@ -2838,7 +2650,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
             logger.warning("⚠️ Проблема с callback_data, отправляем упрощенное сообщение...")
             
             simple_keyboard = InlineKeyboardMarkup(row_width=1)
-            for platform in ['apple_music', 'yandex', 'youtube_music', 'youtube', 'deezer']:
+            for platform in ['yandex', 'youtube_music', 'youtube', 'deezer']:
                 if platform in track_info['links']:
                     simple_keyboard.add(InlineKeyboardButton(
                         f"▶️ {platform_names.get(platform, platform)}",
@@ -2973,26 +2785,27 @@ def send_welcome(message: Message):
         "💿 С альбомами и ▶️ для каждого трека\n"
         "🎫 С концертами через Яндекс Музыку\n"
         "🖼 АВТОМАТИЧЕСКАЯ ГЕНЕРАЦИЯ ОБЛОЖЕК\n"
-        "🔍 ИЩЕТ В DEEZER И APPLE MUSIC\n"
-        "🔗 ДАЁТ ССЫЛКИ НА ЯНДЕКС МУЗЫКУ И YOUTUBE\n"
+        "🔍 ИЩЕТ В 4-Х ИСТОЧНИКАХ:\n"
+        "   • Deezer\n"
+        "   • Яндекс Музыка\n"
+        "   • YouTube Music\n"
+        "   • YouTube\n"
         "🔍 НАХОДИТ ВСЕ ТРЕКИ И АЛЬБОМЫ!\n"
         "🔢 ПОДДЕРЖИВАЕТ ПОИСК ПО ЧИСЛАМ (911, 21, 7 rings и т.д.)\n\n"
         "🔍 <b>Поиск:</b>\n"
-        "/search &lt;название&gt; — поиск трека\n"
-        "/album &lt;название&gt; — поиск альбома\n"
-        "/albums &lt;исполнитель&gt; — все альбомы\n"
-        "/alltracks &lt;исполнитель&gt; — все треки\n"
-        "/concerts &lt;исполнитель&gt; — концерты\n"
-        "/bio &lt;исполнитель&gt; — биография"
+        "/search <название> — поиск трека\n"
+        "/album <название> — поиск альбома\n"
+        "/albums <исполнитель> — все альбомы\n"
+        "/alltracks <исполнитель> — все треки\n"
+        "/concerts <исполнитель> — концерты\n"
+        "/bio <исполнитель> — биография\n\n"
+        "📱 <b>Открыть Mini App:</b>"
     )
-    markup = None
-    if MINI_APP_URL:
-        welcome_text += "\n\n📱 <b>Открыть Mini App:</b>"
-        markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
-        markup.add(KeyboardButton(
-            "📱 Открыть Mini App",
-            web_app=WebAppInfo(url=MINI_APP_URL)
-        ))
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(
+        "📱 Открыть Mini App",
+        web_app=WebAppInfo(url="https://antog1439-afk.github.io/Muzyka/")
+    ))
     bot.reply_to(message, welcome_text, parse_mode='HTML', reply_markup=markup)
 
 @bot.message_handler(commands=['help'])
@@ -3000,12 +2813,12 @@ def help_command(message: Message):
     help_text = (
         "🎵 <b>Помощь по командам</b>\n\n"
         "🔍 <b>Поиск:</b>\n"
-        "• /search &lt;название&gt; — поиск трека\n"
-        "• /album &lt;название&gt; — поиск альбома\n"
-        "• /albums &lt;исполнитель&gt; — все альбомы\n"
-        "• /alltracks &lt;исполнитель&gt; — все треки\n"
-        "• /concerts &lt;исполнитель&gt; — концерты\n"
-        "• /bio &lt;исполнитель&gt; — биография\n"
+        "• /search <название> — поиск трека\n"
+        "• /album <название> — поиск альбома\n"
+        "• /albums <исполнитель> — все альбомы\n"
+        "• /alltracks <исполнитель> — все треки\n"
+        "• /concerts <исполнитель> — концерты\n"
+        "• /bio <исполнитель> — биография\n"
         "• Просто напиши название — бот сам определит\n\n"
         "🔥 <b>Быстрый поиск по настроению:</b>\n"
         "• /hit — Популярные треки\n"
@@ -3020,8 +2833,8 @@ def help_command(message: Message):
         "• 🎧 30 сек — короткое превью\n"
         "• 🎵 Полный трек — полная версия (скачивается с YouTube)\n\n"
         "🔔 <b>Подписки:</b>\n"
-        "• /subscribe &lt;имя&gt; — подписаться\n"
-        "• /unsubscribe &lt;имя&gt; — отписаться\n"
+        "• /subscribe <имя> — подписаться\n"
+        "• /unsubscribe <имя> — отписаться\n"
         "• /subscriptions — список подписок\n\n"
         "🎵 <b>LE MONDE MUSIC</b>"
     )
@@ -3037,7 +2850,7 @@ def search_command(message: Message):
     
     try:
         bot.send_chat_action(message.chat.id, 'typing')
-        status_msg = bot.reply_to(message, f"🔍 Ищем трек: {query}...")
+        status_msg = bot.reply_to(message, f"🔍 Ищем трек: {query} (в 4-х источниках)...")
         
         track_info = search_track_with_retry(query)
         
@@ -3054,9 +2867,9 @@ def search_command(message: Message):
                 reply_text += f"💡 Возможно, вы искали:\n{suggestion}\n\n"
             
             reply_text += "💡 Попробуйте:\n"
-            reply_text += "• /search &lt;трек&gt; &lt;исполнитель&gt;\n"
-            reply_text += "• /albums &lt;исполнитель&gt; — все альбомы\n"
-            reply_text += "• /alltracks &lt;исполнитель&gt; — все треки"
+            reply_text += "• /search <трек> <исполнитель>\n"
+            reply_text += "• /albums <исполнитель> — все альбомы\n"
+            reply_text += "• /alltracks <исполнитель> — все треки"
             
             bot.reply_to(message, reply_text, parse_mode='HTML')
             
@@ -3074,7 +2887,7 @@ def album_command(message: Message):
     
     try:
         bot.send_chat_action(message.chat.id, 'typing')
-        status_msg = bot.reply_to(message, f"🔍 Ищем альбом: {query}...")
+        status_msg = bot.reply_to(message, f"🔍 Ищем альбом: {query} (в 4-х источниках)...")
         
         album_info = search_album_with_retry(query)
         
@@ -3399,6 +3212,13 @@ def handle_callback(call):
     try:
         logger.info(f"📩 Получен callback: {call.data}")
 
+        # ============================================================
+        # === ОБРАБОТЧИК ДЛЯ ft_ (короткая ссылка на полный трек) ===
+        # ============================================================
+        if call.data.startswith('ft_'):
+            track_id = int(call.data.replace('ft_', ''))
+            call.data = f"full_track_{track_id}"
+
         # === НОВЫЙ ОБРАБОТЧИК ДЛЯ ПОИСКА ПО ИСПОЛНИТЕЛЮ ===
         if call.data.startswith('search_artist_'):
             artist_name = urllib.parse.unquote(call.data.replace('search_artist_', ''))
@@ -3411,7 +3231,7 @@ def handle_callback(call):
             
             fake_msg = FakeMessage(call.message.chat.id, artist_name)
             handle_message(fake_msg)
-            return  # ← ДОБАВЛЕН return
+            return
 
         if call.data.startswith('bio_from_release_'):
             artist_name = urllib.parse.unquote(call.data.replace('bio_from_release_', ''))
@@ -3472,7 +3292,6 @@ def handle_callback(call):
             return
         
         if call.data.startswith('full_track_'):
-            # Полная логика обработки полного трека
             try:
                 track_id = int(call.data.replace('full_track_', ''))
                 track_info = user_track_cache.get(track_id)
@@ -3774,36 +3593,67 @@ def handle_web_app(message: Message):
             logger.info(f"🔍 Поиск в Mini App: {query}")
             
             if not query or len(query) < 1:
-                bot.send_message(message.chat.id, '❌ Введите название трека или исполнителя')
+                bot.send_message(message.chat.id, json.dumps({
+                    'type': 'search_result',
+                    'track': None,
+                    'error': 'Слишком короткий запрос'
+                }))
                 return
-
-            status_msg = bot.send_message(message.chat.id, f"🔍 Ищу: {query}")
             
             track_info = search_track_with_retry(query)
             
             if track_info:
-                try:
-                    bot.delete_message(message.chat.id, status_msg.message_id)
-                except Exception:
-                    pass
-                send_track_result(message, track_info)
+                ai_fact = generate_ai_fact(track_info['main_artist'], track_info['title'])
+                song_meaning = get_song_meaning(track_info['title'], track_info['main_artist'])
+                
+                result = {
+                    'type': 'search_result',
+                    'track': {
+                        'title': track_info['title'],
+                        'artists': track_info['artists'],
+                        'album': track_info['album'],
+                        'year': track_info.get('year'),
+                        'release_date': track_info.get('formatted_date') or track_info.get('release_date'),
+                        'relative_time': get_relative_time(track_info.get('release_date')) if track_info.get('release_date') else None,
+                        'duration': track_info['duration_str'],
+                        'main_artist': track_info['main_artist'],
+                        'links': track_info['links'],
+                        'preview_url': track_info.get('preview_url'),
+                        'cover_url': track_info.get('cover_url'),
+                        'ai_fact': ai_fact,
+                        'song_meaning': song_meaning['meaning'] if song_meaning else None,
+                        'song_emotion': song_meaning['emotion'] if song_meaning else None
+                    }
+                }
+                
+                bot.send_message(message.chat.id, json.dumps(result))
                 logger.info(f"✅ Трек найден: {track_info['title']}")
                 return
             
             album_info = search_album_with_retry(query)
             if album_info:
-                try:
-                    bot.delete_message(message.chat.id, status_msg.message_id)
-                except Exception:
-                    pass
-                send_album_result(message, album_info)
+                result = {
+                    'type': 'album_result',
+                    'album': {
+                        'title': album_info['title'],
+                        'artist': album_info['artist'],
+                        'year': album_info.get('year'),
+                        'release_date': format_release_date(album_info.get('release_date')),
+                        'relative_time': get_relative_time(album_info.get('release_date')) if album_info.get('release_date') else None,
+                        'track_count': album_info.get('track_count', 0),
+                        'cover_url': album_info.get('cover_url'),
+                        'link': album_info['link'],
+                        'tracks': [{'title': t['title']} for t in album_info.get('tracks', [])[:5]]
+                    }
+                }
+                bot.send_message(message.chat.id, json.dumps(result))
                 logger.info(f"💿 Альбом найден: {album_info['title']}")
             else:
-                try:
-                    bot.delete_message(message.chat.id, status_msg.message_id)
-                except Exception:
-                    pass
-                bot.send_message(message.chat.id, f'❌ Ничего не найдено по запросу «{query}»')
+                bot.send_message(message.chat.id, json.dumps({
+                    'type': 'search_result',
+                    'track': None,
+                    'error': f'Ничего не найдено по запросу "{query}"'
+                }))
                 logger.warning(f"❌ Ничего не найдено: {query}")
         
         elif action == 'subscribe_artist':
@@ -3811,20 +3661,32 @@ def handle_web_app(message: Message):
             user_id = str(message.from_user.id)
             
             if not artist_name:
-                bot.send_message(message.chat.id, '❌ Укажите имя исполнителя')
+                bot.send_message(message.chat.id, json.dumps({
+                    'type': 'subscribe_result',
+                    'success': False,
+                    'message': 'Укажите имя исполнителя'
+                }))
                 return
             
             if user_id not in user_subscriptions:
                 user_subscriptions[user_id] = []
             
             if any(a['name'].lower() == artist_name.lower() for a in user_subscriptions[user_id]):
-                bot.send_message(message.chat.id, f'ℹ️ Вы уже подписаны на {artist_name}')
+                bot.send_message(message.chat.id, json.dumps({
+                    'type': 'subscribe_result',
+                    'success': False,
+                    'message': f'Вы уже подписаны на {artist_name}'
+                }))
             else:
                 user_subscriptions[user_id].append({'name': artist_name})
                 with open(SUBSCRIPTIONS_FILE, 'w', encoding='utf-8') as f:
                     json.dump(user_subscriptions, f, ensure_ascii=False, indent=2)
                 
-                bot.send_message(message.chat.id, f'🔔 Подписка на {artist_name} оформлена!')
+                bot.send_message(message.chat.id, json.dumps({
+                    'type': 'subscribe_result',
+                    'success': True,
+                    'message': f'Подписка на {artist_name} оформлена!'
+                }))
         
         else:
             logger.warning(f"⚠️ Неизвестное действие: {action}")
@@ -3832,7 +3694,10 @@ def handle_web_app(message: Message):
     except Exception as e:
         logger.error(f"❌ Ошибка в web_app: {e}")
         try:
-            bot.send_message(message.chat.id, '❌ Не удалось обработать запрос Mini App')
+            bot.send_message(message.chat.id, json.dumps({
+                'type': 'error',
+                'message': str(e)
+            }))
         except:
             pass
 
@@ -3925,9 +3790,7 @@ def get_artist_new_release(artist_name: str) -> Optional[Dict[str, Any]]:
         return None
 
 def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
-    """Проверяет, есть ли у исполнителя предстоящий релиз (сначала Яндекс Музыка)"""
     try:
-        # ===== 1. СНАЧАЛА ПРОВЕРЯЕМ ЯНДЕКС МУЗЫКУ =====
         encoded_name = urllib.parse.quote(artist_name)
         url = f"https://music.yandex.ru/artist/{encoded_name}"
         
@@ -3941,13 +3804,11 @@ def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Ищем будущие релизы
             upcoming = soup.find_all(['div', 'a'], class_=re.compile(r'upcoming|future|release|soon|preorder', re.I))
             
             for item in upcoming:
                 text = item.get_text(' ', strip=True)
                 
-                # Ищем дату
                 date_match = re.search(r'(\d{1,2}\s+[а-я]+\s+\d{4}|\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})', text, re.IGNORECASE)
                 
                 if date_match:
@@ -3955,24 +3816,20 @@ def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
                     try:
                         for fmt in ['%d %B %Y', '%d %b %Y', '%d.%m.%Y', '%Y-%m-%d', '%d %B %Y года']:
                             try:
-                                # Очищаем строку от лишнего
                                 clean_date = re.sub(r'года|year', '', date_str).strip()
                                 release_dt = datetime.strptime(clean_date, fmt)
                                 now = datetime.now()
                                 days_diff = (release_dt - now).days
                                 
-                                # Если релиз в будущем (через 0-30 дней)
                                 if 0 <= days_diff <= 30:
                                     title_elem = item.find(class_=re.compile(r'title|name', re.I))
                                     title = title_elem.text.strip() if title_elem else 'Новый релиз'
                                     
-                                    # Ищем обложку
                                     img_elem = item.find('img')
                                     cover_url = None
                                     if img_elem:
                                         cover_url = img_elem.get('src') or img_elem.get('data-src')
                                     
-                                    # Ищем ссылку
                                     link_elem = item.find('a', href=re.compile(r'/album/|/track/', re.I))
                                     link = None
                                     if link_elem:
@@ -3996,7 +3853,6 @@ def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
                     except:
                         pass
         
-        # ===== 2. ЕСЛИ В ЯНДЕКС НЕ НАШЛИ — ПРОВЕРЯЕМ DEEZER =====
         search_url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(artist_name)}&limit=1"
         response = requests.get(search_url, timeout=15)
         
@@ -4045,7 +3901,7 @@ def check_new_releases_for_subscriptions():
         return []
     
     new_releases = []
-    release_check_file = RELEASE_CHECK_FILE
+    release_check_file = 'last_release_check.json'
     
     last_check = {}
     if os.path.exists(release_check_file):
@@ -4160,10 +4016,8 @@ def check_and_notify_new_releases():
 
 @bot.message_handler(commands=['checkreleases'])
 def check_releases_command(message: Message):
-    """Проверяет предстоящие релизы у исполнителя"""
     query = message.text.replace('/checkreleases', '', 1).strip()
     
-    # Если есть аргумент — проверяем конкретного исполнителя
     if query:
         try:
             bot.send_chat_action(message.chat.id, 'typing')
@@ -4248,7 +4102,6 @@ def check_releases_command(message: Message):
             bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
             return
     
-    # Если нет аргумента — проверяем все подписки пользователя
     try:
         bot.send_chat_action(message.chat.id, 'typing')
         status_msg = bot.reply_to(message, "🔍 Проверяем релизы для ваших подписок...")
@@ -4260,7 +4113,7 @@ def check_releases_command(message: Message):
             bot.reply_to(
                 message,
                 "📭 У вас нет подписок!\n\n"
-                "💡 Используйте /subscribe &lt;имя&gt;, чтобы подписаться на исполнителя\n"
+                "💡 Используйте /subscribe <имя>, чтобы подписаться на исполнителя\n"
                 "📌 Пример: /subscribe Асия\n\n"
                 "📌 Или проверьте конкретного исполнителя:\n"
                 "/checkreleases Асия",
@@ -4322,6 +4175,12 @@ def check_releases_command(message: Message):
 
 # === ФУНКЦИЯ ДЛЯ ПОВТОРНОГО ПОДКЛЮЧЕНИЯ ===
 def run_bot_with_retry():
+    try:
+        bot.remove_webhook()
+        logger.info("✅ Webhook удалён")
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось удалить webhook: {e}")
+    
     retry_count = 0
     max_retries = 10
     
@@ -4346,7 +4205,7 @@ def start_release_checker():
     def check_loop():
         while True:
             try:
-                time.sleep(3600 * 6)  # 6 часов
+                time.sleep(3600 * 6)
                 check_and_notify_new_releases()
             except Exception as e:
                 logger.error(f"Ошибка в фоновой проверке: {e}")
@@ -4367,8 +4226,11 @@ if __name__ == '__main__':
     print("💿 Все альбомы с ▶️ для каждого трека")
     print("🎵 Все треки с ▶️ для прослушивания")
     print("🖼 АВТОМАТИЧЕСКАЯ ГЕНЕРАЦИЯ ОБЛОЖЕК, если нет в Deezer")
-    print("🔍 ПОИСК В DEEZER + РЕЗЕРВ APPLE SEARCH API")
-    print("🔗 ССЫЛКИ НА ЯНДЕКС МУЗЫКУ, YOUTUBE MUSIC И YOUTUBE")
+    print("🔍 ИЩЕТ В 4-Х ИСТОЧНИКАХ:")
+    print("   • Deezer")
+    print("   • Яндекс Музыка")
+    print("   • YouTube Music")
+    print("   • YouTube")
     print("🔢 ПОДДЕРЖИВАЕТ ПОИСК ПО ЧИСЛАМ (911, 21, 7 rings и т.д.)")
     print("🔍 НАХОДИТ ВСЕ ТРЕКИ И АЛЬБОМЫ!")
     print("🎫 КРАСИВЫЙ вывод концертов через Яндекс Музыку")
@@ -4376,8 +4238,6 @@ if __name__ == '__main__':
     print("🔄 С автоматическим переподключением")
     print("=" * 60)
     
-    os.makedirs(DATA_DIR, exist_ok=True)
-
     try:
         import bs4
         print("✅ BeautifulSoup установлен")
