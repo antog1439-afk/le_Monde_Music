@@ -2621,12 +2621,12 @@ def send_welcome(message: Message):
         "🔍 НАХОДИТ ВСЕ ТРЕКИ И АЛЬБОМЫ!\n"
         "🔢 ПОДДЕРЖИВАЕТ ПОИСК ПО ЧИСЛАМ (911, 21, 7 rings и т.д.)\n\n"
         "🔍 <b>Поиск:</b>\n"
-        "/search <название> — поиск трека\n"
-        "/album <название> — поиск альбома\n"
-        "/albums <исполнитель> — все альбомы\n"
-        "/alltracks <исполнитель> — все треки\n"
-        "/concerts <исполнитель> — концерты\n"
-        "/bio <исполнитель> — биография\n\n"
+        "/search &lt;название&gt; — поиск трека\n"
+        "/album &lt;название&gt; — поиск альбома\n"
+        "/albums &lt;исполнитель&gt; — все альбомы\n"
+        "/alltracks &lt;исполнитель&gt; — все треки\n"
+        "/concerts &lt;исполнитель&gt; — концерты\n"
+        "/bio &lt;исполнитель&gt; — биография\n\n"
         "📱 <b>Открыть Mini App:</b>"
     )
     markup = InlineKeyboardMarkup()
@@ -2641,12 +2641,12 @@ def help_command(message: Message):
     help_text = (
         "🎵 <b>Помощь по командам</b>\n\n"
         "🔍 <b>Поиск:</b>\n"
-        "• /search <название> — поиск трека\n"
-        "• /album <название> — поиск альбома\n"
-        "• /albums <исполнитель> — все альбомы\n"
-        "• /alltracks <исполнитель> — все треки\n"
-        "• /concerts <исполнитель> — концерты\n"
-        "• /bio <исполнитель> — биография\n"
+        "• /search &lt;название&gt; — поиск трека\n"
+        "• /album &lt;название&gt; — поиск альбома\n"
+        "• /albums &lt;исполнитель&gt; — все альбомы\n"
+        "• /alltracks &lt;исполнитель&gt; — все треки\n"
+        "• /concerts &lt;исполнитель&gt; — концерты\n"
+        "• /bio &lt;исполнитель&gt; — биография\n"
         "• Просто напиши название — бот сам определит\n\n"
         "🔥 <b>Быстрый поиск по настроению:</b>\n"
         "• /hit — Популярные треки\n"
@@ -2661,8 +2661,8 @@ def help_command(message: Message):
         "• 🎧 30 сек — короткое превью\n"
         "• 🎵 Полный трек — полная версия (скачивается с YouTube)\n\n"
         "🔔 <b>Подписки:</b>\n"
-        "• /subscribe <имя> — подписаться\n"
-        "• /unsubscribe <имя> — отписаться\n"
+        "• /subscribe &lt;имя&gt; — подписаться\n"
+        "• /unsubscribe &lt;имя&gt; — отписаться\n"
         "• /subscriptions — список подписок\n\n"
         "🎵 <b>LE MONDE MUSIC</b>"
     )
@@ -2695,9 +2695,9 @@ def search_command(message: Message):
                 reply_text += f"💡 Возможно, вы искали:\n{suggestion}\n\n"
             
             reply_text += "💡 Попробуйте:\n"
-            reply_text += "• /search <трек> <исполнитель>\n"
-            reply_text += "• /albums <исполнитель> — все альбомы\n"
-            reply_text += "• /alltracks <исполнитель> — все треки"
+            reply_text += "• /search &lt;трек&gt; &lt;исполнитель&gt;\n"
+            reply_text += "• /albums &lt;исполнитель&gt; — все альбомы\n"
+            reply_text += "• /alltracks &lt;исполнитель&gt; — все треки"
             
             bot.reply_to(message, reply_text, parse_mode='HTML')
             
@@ -3947,7 +3947,7 @@ def check_releases_command(message: Message):
             bot.reply_to(
                 message,
                 "📭 У вас нет подписок!\n\n"
-                "💡 Используйте /subscribe <имя>, чтобы подписаться на исполнителя\n"
+                "💡 Используйте /subscribe &lt;имя&gt;, чтобы подписаться на исполнителя\n"
                 "📌 Пример: /subscribe Асия\n\n"
                 "📌 Или проверьте конкретного исполнителя:\n"
                 "/checkreleases Асия",
