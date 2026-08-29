@@ -2,6 +2,10 @@
 
 Музыкальный бот для Telegram.
 
+Основной поиск работает через Deezer. Если Deezer возвращает пустой каталог
+для IP сервера, бот автоматически использует Apple Search API. Страна
+резервного каталога задаётся через `ITUNES_COUNTRY` (по умолчанию `RU`).
+
 ## Запуск на сервере через Docker Compose
 
 Требования: Docker Engine и Docker Compose plugin.

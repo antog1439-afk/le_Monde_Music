@@ -9,6 +9,7 @@ services:
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:?Set TELEGRAM_TOKEN in .env}
       DATA_DIR: /app/data
       MINI_APP_URL: ${MINI_APP_URL:-}
+      ITUNES_COUNTRY: ${ITUNES_COUNTRY:-RU}
     volumes:
       - le_monde_music_data:/app/data
 
