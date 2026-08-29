@@ -46,6 +46,14 @@ SUBSCRIPTIONS_FILE = os.getenv(
     os.path.join(DATA_DIR, 'user_subscriptions.json')
 )
 RELEASE_CHECK_FILE = os.path.join(DATA_DIR, 'last_release_check.json')
+MINI_APP_URL = os.getenv('MINI_APP_URL', '').strip()
+mini_app_url_parts = urllib.parse.urlparse(MINI_APP_URL)
+if MINI_APP_URL and (
+    mini_app_url_parts.scheme != 'https' or not mini_app_url_parts.netloc
+):
+    logger.warning('⚠️ MINI_APP_URL должен начинаться с https://; кнопка Mini App отключена')
+    MINI_APP_URL = ''
+
 MAX_RETRIES = 5
 RETRY_DELAY = 5
 CONCERTS_CACHE_DURATION = 3600
@@ -1535,10 +1543,11 @@ def send_artist_bio(message: Message, artist_name: str):
         url=f"https://music.youtube.com/search?q={urllib.parse.quote(info['name'])}"
     ))
     
-    keyboard.add(InlineKeyboardButton(
-        "📱 Открыть Mini App",
-        web_app=WebAppInfo(url="https://antog1439-afk.github.io/Muzyka/")
-    ))
+    if MINI_APP_URL:
+        keyboard.add(InlineKeyboardButton(
+            "📱 Открыть Mini App",
+            web_app=WebAppInfo(url=MINI_APP_URL)
+        ))
     
     concert_info = check_concerts_yandex_music(artist_name)
     encoded_name = urllib.parse.quote(artist_name)
@@ -2626,14 +2635,16 @@ def send_welcome(message: Message):
         "/albums &lt;исполнитель&gt; — все альбомы\n"
         "/alltracks &lt;исполнитель&gt; — все треки\n"
         "/concerts &lt;исполнитель&gt; — концерты\n"
-        "/bio &lt;исполнитель&gt; — биография\n\n"
-        "📱 <b>Открыть Mini App:</b>"
+        "/bio &lt;исполнитель&gt; — биография"
     )
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton(
-        "📱 Открыть Mini App",
-        web_app=WebAppInfo(url="https://antog1439-afk.github.io/Muzyka/")
-    ))
+    markup = None
+    if MINI_APP_URL:
+        welcome_text += "\n\n📱 <b>Открыть Mini App:</b>"
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton(
+            "📱 Открыть Mini App",
+            web_app=WebAppInfo(url=MINI_APP_URL)
+        ))
     bot.reply_to(message, welcome_text, parse_mode='HTML', reply_markup=markup)
 
 @bot.message_handler(commands=['help'])
