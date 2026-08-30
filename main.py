@@ -943,152 +943,112 @@ def search_all_albums(query: str, max_pages: int = 10) -> List[Dict[str, Any]]:
 
 # === ФУНКЦИЯ ПОИСКА ТРЕКА ===
 def search_track_full(query: str) -> Optional[Dict[str, Any]]:
-    """Поиск трека (точное совпадение по исполнителю и названию)"""
+    """ТОЧНЫЙ поиск трека — без приоритетов и популярности"""
     try:
-        parts = query.split()
+        logger.info(f"🔍 Точный поиск: {query}")
         
-        artist = None
-        title = query
+        # ===== 1. ИЩЕМ В DEEZER =====
+        all_tracks = search_all_tracks(query, max_pages=5)
         
-        # ===== 1. ОПРЕДЕЛЯЕМ ИСПОЛНИТЕЛЯ И НАЗВАНИЕ =====
-        # Если в запросе есть " - " или " — "
-        if ' - ' in query or ' — ' in query:
-            sep = ' - ' if ' - ' in query else ' — '
-            parts = query.split(sep)
-            if len(parts) >= 2:
-                artist = parts[0].strip()
-                title = parts[1].strip()
-        else:
-            # Проверяем известных исполнителей
-            known_artists = [
-                'асия', 'кино', 'земфира', 'моргенштерн', 'платина', 
-                'big baby tape', 'imagine dragons', 'скриптонит', 
-                'eminem', 'taylor swift', 'billie eilish'
-            ]
-            for known in known_artists:
-                if known in query.lower():
-                    artist = known
-                    # Находим оригинальное написание из запроса
-                    for word in query.split():
-                        if word.lower() == known:
-                            artist = word
-                            break
-                    title = query.lower().replace(known, '').strip()
-                    break
-            
-            # Если не нашли в базе — считаем первое слово исполнителем
-            if not artist and len(parts) > 1:
-                artist = parts[0]
-                title = ' '.join(parts[1:])
+        if not all_tracks:
+            logger.warning(f"❌ Ничего не найдено в Deezer: {query}")
+            return None
         
-        # ===== 2. ПОИСК В ЯНДЕКС МУЗЫКЕ =====
-        if artist:
-            logger.info(f"🔍 Поиск в Яндекс: {artist} — {title}")
-            yandex_result = search_yandex_music_track(artist, title)
-            if yandex_result and yandex_result.get('found'):
-                yandex_artist = yandex_result.get('artist', '').lower()
-                # Проверяем совпадение исполнителя
-                if artist.lower() in yandex_artist or yandex_artist in artist.lower():
-                    logger.info(f"✅ Найдено в Яндекс Музыке: {yandex_result['title']} — {yandex_result['artist']}")
-                    
-                    track_data = {
-                        'title': yandex_result['title'],
-                        'artists': yandex_result['artist'],
-                        'main_artist': yandex_result['artist'],
-                        'album': 'Неизвестный альбом',
-                        'year': None,
-                        'release_date': None,
-                        'formatted_date': None,
-                        'track_id': 0,
-                        'duration': yandex_result.get('duration', 0),
-                        'duration_str': yandex_result.get('duration_str', '0:00'),
-                        'cover_url': None,
-                        'preview_url': None,
-                        'explicit': False,
-                        'source': 'yandex_music',
-                        'links': {
-                            'yandex': yandex_result['url'],
-                            'youtube_music': f"https://music.youtube.com/search?q={urllib.parse.quote(query)}",
-                            'youtube': f"https://www.youtube.com/results?search_query={urllib.parse.quote(query + ' music')}",
-                            'deezer': None
-                        }
-                    }
-                    user_track_cache[0] = track_data
-                    return track_data
+        # ===== 2. НОРМАЛИЗУЕМ ЗАПРОС ДЛЯ СРАВНЕНИЯ =====
+        query_normalized = query.lower().strip()
+        # Убираем лишние пробелы
+        query_normalized = ' '.join(query_normalized.split())
         
-        # ===== 3. ПОИСК В DEEZER С ТОЧНЫМ СОВПАДЕНИЕМ =====
-        logger.info(f"🔍 Поиск в Deezer: {query}")
-        all_tracks = search_all_tracks(query, max_pages=10)
+        # Разбиваем запрос на слова
+        query_words = set(query_normalized.split())
         
-        if all_tracks:
-            query_lower = query.lower()
+        # ===== 3. ИЩЕМ ТОЧНОЕ СОВПАДЕНИЕ =====
+        best_match = None
+        best_score = 0
+        
+        for track in all_tracks:
+            track_title = track.get('title', '').lower().strip()
+            artist_name = track.get('artist', {}).get('name', '').lower().strip()
             
-            # Определяем поисковые параметры
-            search_artist = None
-            search_title = query_lower
+            # Нормализуем названия
+            track_title = ' '.join(track_title.split())
+            artist_name = ' '.join(artist_name.split())
             
-            if ' - ' in query or ' — ' in query:
-                sep = ' - ' if ' - ' in query else ' — '
-                parts = query.split(sep)
-                if len(parts) >= 2:
-                    search_artist = parts[0].lower().strip()
-                    search_title = parts[1].lower().strip()
-            else:
-                # Проверяем известных исполнителей
-                known_artists = ['асия', 'кино', 'земфира', 'моргенштерн', 'платина', 'big baby tape', 'imagine dragons']
-                for known in known_artists:
-                    if known in query_lower:
-                        search_artist = known
-                        search_title = query_lower.replace(known, '').strip()
-                        break
-                
-                # Если не нашли — берем первое слово как исполнителя
-                if not search_artist:
-                    parts = query_lower.split()
-                    if len(parts) > 1:
-                        search_artist = parts[0]
-                        search_title = ' '.join(parts[1:])
+            # ===== СЧИТАЕМ СОВПАДЕНИЯ =====
+            score = 0
             
-            # === СНАЧАЛА ИЩЕМ ТОЧНОЕ СОВПАДЕНИЕ ===
-            # 1. По исполнителю и названию
-            for track in all_tracks:
-                track_title = track.get('title', '').lower()
-                artist_name = track.get('artist', {}).get('name', '').lower()
-                
-                if search_artist and search_artist in artist_name:
-                    if search_title in track_title or track_title in search_title:
-                        logger.info(f"✅ Точное совпадение в Deezer: {track_title} — {artist_name}")
-                        return parse_track_data(track)
+            # Проверяем, есть ли исполнитель в запросе
+            artist_words = set(artist_name.split())
+            artist_match = len(artist_words & query_words)
             
-            # 2. По названию (если исполнитель совпадает)
-            for track in all_tracks:
-                track_title = track.get('title', '').lower()
-                artist_name = track.get('artist', {}).get('name', '').lower()
-                
-                if search_title in track_title or track_title in search_title:
-                    if search_artist:
-                        if search_artist in artist_name:
-                            logger.info(f"✅ Совпадение по названию: {track_title} — {artist_name}")
+            # Проверяем, есть ли название трека в запросе
+            title_words = set(track_title.split())
+            title_match = len(title_words & query_words)
+            
+            # ОЧЕНЬ ВАЖНО: исполнитель должен совпадать ХОТЯ БЫ НА 50%
+            if artist_match == 0:
+                continue  # Пропускаем треки с неправильным исполнителем
+            
+            # Считаем общий score
+            total_words = len(query_words)
+            if total_words > 0:
+                score = (artist_match + title_match) / total_words
+            
+            # Бонус за точное совпадение
+            if artist_name in query_normalized and track_title in query_normalized:
+                score = 1.0  # Максимальный балл
+            elif artist_name in query_normalized:
+                score = max(score, 0.7)
+            elif track_title in query_normalized:
+                score = max(score, 0.5)
+            
+            # Если нашли лучшее совпадение
+            if score > best_score:
+                best_score = score
+                best_match = track
+                logger.info(f"📊 Найдено совпадение: {track_title} — {artist_name} (score: {score:.2f})")
+        
+        # ===== 4. ЕСЛИ НАШЛИ ХОРОШЕЕ СОВПАДЕНИЕ =====
+        if best_match and best_score >= 0.4:  # Минимальный порог
+            logger.info(f"✅ Точное совпадение: {best_match.get('title')} — {best_match.get('artist', {}).get('name')}")
+            return parse_track_data(best_match)
+        
+        # ===== 5. ПРОВЕРЯЕМ, НЕТ ЛИ ИСПОЛНИТЕЛЯ В ЗАПРОСЕ =====
+        # Если не нашли точного совпадения, но есть исполнитель — ищем его треки
+        possible_artists = ['big baby tape', 'асия', 'кино', 'imagine dragons']
+        found_artist = None
+        for artist in possible_artists:
+            if artist in query_normalized:
+                found_artist = artist
+                break
+        
+        if found_artist:
+            # Ищем ТОЛЬКО треки этого исполнителя
+            artist_search = f'artist:"{found_artist}"'
+            url = f"https://api.deezer.com/search?q={urllib.parse.quote(artist_search)}&limit=20"
+            response = requests.get(url, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('data'):
+                    # Ищем среди треков исполнителя
+                    for track in data['data']:
+                        track_title = track.get('title', '').lower()
+                        # Проверяем, совпадает ли название
+                        if any(word in track_title for word in query_normalized.split()):
+                            logger.info(f"✅ Найден трек исполнителя: {track_title}")
                             return parse_track_data(track)
-            
-            # 3. Если есть исполнитель — ищем любой его трек
-            if search_artist:
-                for track in all_tracks:
-                    artist_name = track.get('artist', {}).get('name', '').lower()
-                    if search_artist in artist_name:
-                        logger.info(f"✅ Найден трек исполнителя: {track.get('title', '')} — {artist_name}")
-                        return parse_track_data(track)
-            
-            # === ЕСЛИ НИЧЕГО НЕ НАШЛИ — ВОЗВРАЩАЕМ ПЕРВЫЙ ===
-            logger.warning(f"⚠️ Точного совпадения нет, возвращаем первый трек")
-            return parse_track_data(all_tracks[0])
         
+        # ===== 6. НИЧЕГО НЕ НАШЛИ =====
+        logger.warning(f"❌ Точного совпадения нет для: {query}")
+        
+        # Возвращаем None (бот скажет, что не найдено)
         return None
         
     except Exception as e:
         logger.error(f"Ошибка в search_track_full: {e}")
         return None
-
+        
 # === ФУНКЦИЯ ПОИСКА АЛЬБОМА ===
 def search_album_full(query: str) -> Optional[Dict[str, Any]]:
     try:
