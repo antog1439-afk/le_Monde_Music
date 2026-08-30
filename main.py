@@ -940,42 +940,93 @@ def search_all_albums(query: str, max_pages: int = 10) -> List[Dict[str, Any]]:
             continue
     
     return all_albums
-
+    
 def search_tracks_by_title(query: str) -> List[Dict[str, Any]]:
-    """Ищет все треки с похожим названием"""
+    """Ищет все треки с похожим названием ИЛИ исполнителем"""
     try:
+        logger.info(f"🔍 search_tracks_by_title: {query}")
+        
         all_tracks = search_all_tracks(query, max_pages=3)
         
         if not all_tracks:
+            logger.warning(f"❌ Ничего не найдено в Deezer: {query}")
             return []
         
-        query_lower = query.lower()
+        logger.info(f"🔍 Найдено в Deezer: {len(all_tracks)} треков")
+        
+        query_lower = query.lower().strip()
         query_words = set(query_lower.split())
         results = []
         
         for track in all_tracks:
-            track_title = track.get('title', '').lower()
-            artist_name = track.get('artist', {}).get('name', '').lower()
+            track_title = track.get('title', '').lower().strip()
+            artist_name = track.get('artist', {}).get('name', '').lower().strip()
             
+            # Нормализуем
+            track_title = ' '.join(track_title.split())
+            artist_name = ' '.join(artist_name.split())
+            
+            # ===== СЧИТАЕМ ОЧКИ =====
             score = 0
             
+            # 1. Проверяем название трека
             if query_lower in track_title:
                 score = 1.0
+                logger.info(f"📊 ТОЧНОЕ совпадение по названию: {track_title}")
             elif track_title in query_lower:
                 score = 0.8
+                logger.info(f"📊 Частичное совпадение по названию: {track_title}")
             else:
                 title_words = set(track_title.split())
                 match_count = len(title_words & query_words)
                 if match_count > 0:
                     score = match_count / len(query_words)
+                    logger.info(f"📊 Совпадение по словам: {track_title} (score: {score:.2f})")
             
-            if any(word in artist_name for word in query_words):
-                score += 0.2
+            # 2. Проверяем исполнителя (ДАЁМ БОЛЬШЕ ОЧКОВ!)
+            artist_words = set(artist_name.split())
+            artist_match = len(artist_words & query_words)
+            if artist_match > 0:
+                artist_score = artist_match / len(query_words)
+                score = max(score, artist_score * 1.2)  # Исполнитель важнее
+                logger.info(f"📊 Совпадение по исполнителю: {artist_name} (score: {score:.2f})")
             
+            # 3. Бонус за точное совпадение исполнителя
+            if artist_name in query_lower:
+                score = max(score, 0.9)
+                logger.info(f"📊 Точное совпадение исполнителя: {artist_name}")
+            
+            # 4. Бонус за точное совпадение названия
+            if track_title in query_lower:
+                score = max(score, 0.8)
+                logger.info(f"📊 Точное совпадение названия: {track_title}")
+            
+            # 5. Если в запросе есть исполнитель — ищем ТОЛЬКО его
+            # Проверяем известных исполнителей
+            known_artists = ['big baby tape', 'асия', 'кино', 'imagine dragons']
+            for known in known_artists:
+                if known in query_lower:
+                    # Если запрос содержит известного исполнителя — проверяем, что трек именно его
+                    if known in artist_name:
+                        score = max(score, 0.8)  # Даём высокий балл
+                        logger.info(f"📊 Известный исполнитель {known} совпадает!")
+                    else:
+                        # Если исполнитель не тот — сильно снижаем балл
+                        score = score * 0.3
+                        logger.info(f"📊 Исполнитель {artist_name} не совпадает с {known}, снижаем балл")
+                    break
+            
+            logger.info(f"📊 Итоговый score для {track_title} — {artist_name}: {score:.2f}")
+            
+            # ===== ДОБАВЛЯЕМ В РЕЗУЛЬТАТЫ =====
             if score > 0.3:
                 results.append(track)
+                logger.info(f"✅ ДОБАВЛЕН: {track_title} — {artist_name} (score: {score:.2f})")
         
+        # Сортируем по популярности
         results.sort(key=lambda x: x.get('rank', 0), reverse=True)
+        
+        logger.info(f"✅ Найдено {len(results)} подходящих треков")
         return results[:10]
         
     except Exception as e:
@@ -1100,24 +1151,39 @@ def send_track_selection(message: Message, query: str, tracks: List[Dict[str, An
     
     keyboard = InlineKeyboardMarkup(row_width=1)
     
+    # Показываем до 10 треков
     for i, track in enumerate(tracks[:10], 1):
         title = track.get('title', 'Без названия')
         artist = track.get('artist', {}).get('name', 'Неизвестный')
         track_id = track.get('id')
         
-        text += f"{i}. <b>{artist}</b> — {title}\n"
+        # Обрезаем длинные названия
+        title_short = title[:25] + '...' if len(title) > 25 else title
+        artist_short = artist[:20] + '...' if len(artist) > 20 else artist
+        
+        text += f"{i}. <b>{artist_short}</b> — {title_short}\n"
         
         if track_id:
             callback_data = f"select_track_{track_id}"
             keyboard.add(InlineKeyboardButton(
-                f"🎵 {artist[:15]} — {title[:20]}{'...' if len(title) > 20 else ''}",
+                f"🎵 {artist_short} — {title_short}",
                 callback_data=callback_data
             ))
     
+    # Сохраняем треки в кэш
     for track in tracks:
         track_id = track.get('id')
         if track_id:
-            user_track_cache[track_id] = parse_track_data(track)
+            try:
+                user_track_cache[track_id] = parse_track_data(track)
+            except Exception as e:
+                logger.error(f"Ошибка кэширования трека {track_id}: {e}")
+    
+    # Добавляем кнопку "Отмена"
+    keyboard.add(InlineKeyboardButton(
+        "❌ Отмена",
+        callback_data="cancel_search"
+    ))
     
     bot.send_message(
         message.chat.id,
@@ -3326,29 +3392,41 @@ def handle_callback(call):
         if call.data.startswith('select_track_'):
             try:
                 track_id = int(call.data.replace('select_track_', ''))
+        
+                # Пытаемся получить из кэша
                 track_info = user_track_cache.get(track_id)
         
                 if not track_info:
                     # Если нет в кэше — загружаем из Deezer
+                    logger.info(f"🔍 Загружаем трек из Deezer: {track_id}")
                     url = f"https://api.deezer.com/track/{track_id}"
                     response = requests.get(url, timeout=15)
                     if response.status_code == 200:
                         track_data = response.json()
                         track_info = parse_track_data(track_data)
                     else:
-                        bot.answer_callback_query(call.id, "❌ Трек не найден", show_alert=True)
+                        bot.answer_callback_query(call.id, "❌ Трек не найден на Deezer", show_alert=True)
                         return
         
-                bot.answer_callback_query(call.id, f"✅ {track_info['title']} — {track_info['artists']}")
+                if not track_info:
+                    bot.answer_callback_query(call.id, "❌ Трек не найден", show_alert=True)
+                    return
+        
+                # Удаляем сообщение с выбором
+                try:
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                except:
+                    pass
         
                 # Отправляем трек с обложкой
+                bot.answer_callback_query(call.id, f"✅ {track_info['title']} — {track_info['artists']}")
                 send_track_result(call.message, track_info)
-                return  # ← ВАЖНО: return, чтобы не обрабатывать дальше
+                return
         
-        except Exception as e:
-            logger.error(f"Ошибка выбора трека: {e}")
-            bot.answer_callback_query(call.id, f"❌ Ошибка: {str(e)[:50]}")
-            return
+            except Exception as e:
+                logger.error(f"Ошибка выбора трека: {e}")
+                bot.answer_callback_query(call.id, f"❌ Ошибка: {str(e)[:50]}", show_alert=True)
+                return
         
         if call.data.startswith('bio_concert_'):
             artist_name = call.data.replace('bio_concert_', '')
@@ -3475,6 +3553,16 @@ def handle_callback(call):
             artist_name = call.data.replace('bio_album_', '').replace('_', ' ')
             bot.answer_callback_query(call.id, "🎤 Загружаем биографию...")
             send_artist_bio(call.message, artist_name)
+            return
+
+        # === ОБРАБОТЧИК ОТМЕНЫ ПОИСКА ===
+        if call.data == 'cancel_search':
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+                bot.answer_callback_query(call.id, "❌ Поиск отменён")
+            except Exception as e:
+                logger.error(f"Ошибка отмены поиска: {e}")
+                bot.answer_callback_query(call.id, "❌ Ошибка")
             return
         
         callback_data = callback_storage.get(call.data, {})
