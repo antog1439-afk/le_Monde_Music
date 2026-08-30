@@ -154,7 +154,7 @@ SONG_MEANINGS = {
 }
 
 # ====================================================
-# === НОВЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ОБЛОЖКАМИ ===
+# === ФУНКЦИИ ДЛЯ РАБОТЫ С ОБЛОЖКАМИ ===
 # ====================================================
 
 def generate_fallback_cover(artist: str, title: str) -> Optional[bytes]:
@@ -940,7 +940,11 @@ def search_all_albums(query: str, max_pages: int = 10) -> List[Dict[str, Any]]:
             continue
     
     return all_albums
-    
+
+# ============================================================
+# === НОВАЯ ФУНКЦИЯ: ТОЧНЫЙ ПОИСК ПО НАЗВАНИЮ И ИСПОЛНИТЕЛЮ ===
+# ============================================================
+
 def search_tracks_by_title(query: str) -> List[Dict[str, Any]]:
     """Ищет все треки с похожим названием ИЛИ исполнителем"""
     try:
@@ -1033,8 +1037,63 @@ def search_tracks_by_title(query: str) -> List[Dict[str, Any]]:
         logger.error(f"Ошибка поиска треков по названию: {e}")
         return []
 
+# ============================================================
+# === НОВАЯ ФУНКЦИЯ: ПОКАЗ СПИСКА ТРЕКОВ ===
+# ============================================================
 
-# === ФУНКЦИЯ ПОИСКА ТРЕКА ===
+def send_track_selection(message: Message, query: str, tracks: List[Dict[str, Any]]):
+    """Показывает список найденных треков с кнопками выбора"""
+    bot.send_chat_action(message.chat.id, 'typing')
+    
+    text = f"🔍 <b>Найдено {len(tracks)} треков</b>\n\n"
+    
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    
+    # Показываем до 10 треков
+    for i, track in enumerate(tracks[:10], 1):
+        title = track.get('title', 'Без названия')
+        artist = track.get('artist', {}).get('name', 'Неизвестный')
+        track_id = track.get('id')
+        
+        # Обрезаем длинные названия
+        title_short = title[:25] + '...' if len(title) > 25 else title
+        artist_short = artist[:20] + '...' if len(artist) > 20 else artist
+        
+        text += f"{i}. <b>{artist_short}</b> — {title_short}\n"
+        
+        if track_id:
+            callback_data = f"select_track_{track_id}"
+            keyboard.add(InlineKeyboardButton(
+                f"🎵 {artist_short} — {title_short}",
+                callback_data=callback_data
+            ))
+    
+    # Сохраняем треки в кэш
+    for track in tracks:
+        track_id = track.get('id')
+        if track_id:
+            try:
+                user_track_cache[track_id] = parse_track_data(track)
+            except Exception as e:
+                logger.error(f"Ошибка кэширования трека {track_id}: {e}")
+    
+    # Добавляем кнопку "Отмена"
+    keyboard.add(InlineKeyboardButton(
+        "❌ Отмена",
+        callback_data="cancel_search"
+    ))
+    
+    bot.send_message(
+        message.chat.id,
+        text,
+        parse_mode='HTML',
+        reply_markup=keyboard
+    )
+
+# ============================================================
+# === ФУНКЦИЯ ПОИСКА ТРЕКА (для обратной совместимости) ===
+# ============================================================
+
 def search_track_full(query: str) -> Optional[Dict[str, Any]]:
     """ТОЧНЫЙ поиск трека — без приоритетов и популярности"""
     try:
@@ -1106,93 +1165,18 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
             logger.info(f"✅ Точное совпадение: {best_match.get('title')} — {best_match.get('artist', {}).get('name')}")
             return parse_track_data(best_match)
         
-        # ===== 5. ПРОВЕРЯЕМ, НЕТ ЛИ ИСПОЛНИТЕЛЯ В ЗАПРОСЕ =====
-        # Если не нашли точного совпадения, но есть исполнитель — ищем его треки
-        possible_artists = ['big baby tape', 'асия', 'кино', 'imagine dragons']
-        found_artist = None
-        for artist in possible_artists:
-            if artist in query_normalized:
-                found_artist = artist
-                break
-        
-        if found_artist:
-            # Ищем ТОЛЬКО треки этого исполнителя
-            artist_search = f'artist:"{found_artist}"'
-            url = f"https://api.deezer.com/search?q={urllib.parse.quote(artist_search)}&limit=20"
-            response = requests.get(url, timeout=30)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('data'):
-                    # Ищем среди треков исполнителя
-                    for track in data['data']:
-                        track_title = track.get('title', '').lower()
-                        # Проверяем, совпадает ли название
-                        if any(word in track_title for word in query_normalized.split()):
-                            logger.info(f"✅ Найден трек исполнителя: {track_title}")
-                            return parse_track_data(track)
-        
-        # ===== 6. НИЧЕГО НЕ НАШЛИ =====
+        # ===== 5. ЕСЛИ НЕ НАШЛИ — ВОЗВРАЩАЕМ NONE =====
         logger.warning(f"❌ Точного совпадения нет для: {query}")
-        
-        # Возвращаем None (бот скажет, что не найдено)
         return None
         
     except Exception as e:
         logger.error(f"Ошибка в search_track_full: {e}")
         return None
 
-# === НОВАЯ ФУНКЦИЯ: ПОКАЗ СПИСКА ТРЕКОВ ===
-def send_track_selection(message: Message, query: str, tracks: List[Dict[str, Any]]):
-    """Показывает список найденных треков с кнопками выбора"""
-    bot.send_chat_action(message.chat.id, 'typing')
-    
-    text = f"🔍 <b>Найдено {len(tracks)} треков</b>\n\n"
-    
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    
-    # Показываем до 10 треков
-    for i, track in enumerate(tracks[:10], 1):
-        title = track.get('title', 'Без названия')
-        artist = track.get('artist', {}).get('name', 'Неизвестный')
-        track_id = track.get('id')
-        
-        # Обрезаем длинные названия
-        title_short = title[:25] + '...' if len(title) > 25 else title
-        artist_short = artist[:20] + '...' if len(artist) > 20 else artist
-        
-        text += f"{i}. <b>{artist_short}</b> — {title_short}\n"
-        
-        if track_id:
-            callback_data = f"select_track_{track_id}"
-            keyboard.add(InlineKeyboardButton(
-                f"🎵 {artist_short} — {title_short}",
-                callback_data=callback_data
-            ))
-    
-    # Сохраняем треки в кэш
-    for track in tracks:
-        track_id = track.get('id')
-        if track_id:
-            try:
-                user_track_cache[track_id] = parse_track_data(track)
-            except Exception as e:
-                logger.error(f"Ошибка кэширования трека {track_id}: {e}")
-    
-    # Добавляем кнопку "Отмена"
-    keyboard.add(InlineKeyboardButton(
-        "❌ Отмена",
-        callback_data="cancel_search"
-    ))
-    
-    bot.send_message(
-        message.chat.id,
-        text,
-        parse_mode='HTML',
-        reply_markup=keyboard
-    )
-        
+# ============================================================
 # === ФУНКЦИЯ ПОИСКА АЛЬБОМА ===
+# ============================================================
+
 def search_album_full(query: str) -> Optional[Dict[str, Any]]:
     try:
         all_albums = search_all_albums(query, max_pages=10)
@@ -2664,7 +2648,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     
     track_text += f"\n\n🎧 <b>Слушать на платформах:</b>"
     
-    # ===== КЛАВИАТУРА (остаётся без изменений) =====
+    # ===== КЛАВИАТУРА =====
     keyboard = InlineKeyboardMarkup(row_width=2)
     
     platform_buttons = []
@@ -2948,6 +2932,7 @@ def help_command(message: Message):
         "🎵 <b>LE MONDE MUSIC</b>"
     )
     bot.reply_to(message, help_text, parse_mode='HTML')
+
 @bot.message_handler(commands=['search'])
 def search_command(message: Message):
     query = message.text.replace('/search', '', 1).strip()
@@ -3337,7 +3322,6 @@ def handle_message(message: Message):
         logger.error(f"Ошибка в handle_message: {e}")
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
 
-
 # === ОБРАБОТЧИК CALLBACK ===
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
@@ -3365,7 +3349,7 @@ def handle_callback(call):
             
             fake_msg = FakeMessage(call.message.chat.id, artist_name)
             handle_message(fake_msg)
-            return  # ← ДОБАВЛЕН return
+            return
 
         if call.data.startswith('bio_from_release_'):
             artist_name = urllib.parse.unquote(call.data.replace('bio_from_release_', ''))
@@ -4397,6 +4381,7 @@ def run_bot_with_retry():
     
     if retry_count >= max_retries:
         logger.error("❌ Превышено максимальное количество попыток подключения")
+
 # === ФУНКЦИЯ ДЛЯ ФОНОВОЙ ПРОВЕРКИ НОВЫХ РЕЛИЗОВ ===
 def start_release_checker():
     def check_loop():
@@ -4414,7 +4399,7 @@ def start_release_checker():
 # === ЗАПУСК ===
 if __name__ == '__main__':
     print("=" * 60)
-    print("🎵 LE MONDE MUSIC BOT v41.0")
+    print("🎵 LE MONDE MUSIC BOT v42.0")
     print("🎧 30-секундное превью для КАЖДОГО трека")
     print("🎵 ПОЛНОЕ ПРОСЛУШИВАНИЕ ТРЕКОВ (из YouTube)")
     print("📆 С датой релиза и ОТНОСИТЕЛЬНЫМ ВРЕМЕНЕМ")
