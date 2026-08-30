@@ -941,6 +941,48 @@ def search_all_albums(query: str, max_pages: int = 10) -> List[Dict[str, Any]]:
     
     return all_albums
 
+def search_tracks_by_title(query: str) -> List[Dict[str, Any]]:
+    """Ищет все треки с похожим названием"""
+    try:
+        all_tracks = search_all_tracks(query, max_pages=3)
+        
+        if not all_tracks:
+            return []
+        
+        query_lower = query.lower()
+        query_words = set(query_lower.split())
+        results = []
+        
+        for track in all_tracks:
+            track_title = track.get('title', '').lower()
+            artist_name = track.get('artist', {}).get('name', '').lower()
+            
+            score = 0
+            
+            if query_lower in track_title:
+                score = 1.0
+            elif track_title in query_lower:
+                score = 0.8
+            else:
+                title_words = set(track_title.split())
+                match_count = len(title_words & query_words)
+                if match_count > 0:
+                    score = match_count / len(query_words)
+            
+            if any(word in artist_name for word in query_words):
+                score += 0.2
+            
+            if score > 0.3:
+                results.append(track)
+        
+        results.sort(key=lambda x: x.get('rank', 0), reverse=True)
+        return results[:10]
+        
+    except Exception as e:
+        logger.error(f"Ошибка поиска треков по названию: {e}")
+        return []
+
+
 # === ФУНКЦИЯ ПОИСКА ТРЕКА ===
 def search_track_full(query: str) -> Optional[Dict[str, Any]]:
     """ТОЧНЫЙ поиск трека — без приоритетов и популярности"""
@@ -1048,6 +1090,41 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Ошибка в search_track_full: {e}")
         return None
+
+# === НОВАЯ ФУНКЦИЯ: ПОКАЗ СПИСКА ТРЕКОВ ===
+def send_track_selection(message: Message, query: str, tracks: List[Dict[str, Any]]):
+    """Показывает список найденных треков с кнопками выбора"""
+    bot.send_chat_action(message.chat.id, 'typing')
+    
+    text = f"🔍 <b>Найдено {len(tracks)} треков</b>\n\n"
+    
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    
+    for i, track in enumerate(tracks[:10], 1):
+        title = track.get('title', 'Без названия')
+        artist = track.get('artist', {}).get('name', 'Неизвестный')
+        track_id = track.get('id')
+        
+        text += f"{i}. <b>{artist}</b> — {title}\n"
+        
+        if track_id:
+            callback_data = f"select_track_{track_id}"
+            keyboard.add(InlineKeyboardButton(
+                f"🎵 {artist[:15]} — {title[:20]}{'...' if len(title) > 20 else ''}",
+                callback_data=callback_data
+            ))
+    
+    for track in tracks:
+        track_id = track.get('id')
+        if track_id:
+            user_track_cache[track_id] = parse_track_data(track)
+    
+    bot.send_message(
+        message.chat.id,
+        text,
+        parse_mode='HTML',
+        reply_markup=keyboard
+    )
         
 # === ФУНКЦИЯ ПОИСКА АЛЬБОМА ===
 def search_album_full(query: str) -> Optional[Dict[str, Any]]:
@@ -2805,7 +2882,6 @@ def help_command(message: Message):
         "🎵 <b>LE MONDE MUSIC</b>"
     )
     bot.reply_to(message, help_text, parse_mode='HTML')
-
 @bot.message_handler(commands=['search'])
 def search_command(message: Message):
     query = message.text.replace('/search', '', 1).strip()
@@ -2818,11 +2894,18 @@ def search_command(message: Message):
         bot.send_chat_action(message.chat.id, 'typing')
         status_msg = bot.reply_to(message, f"🔍 Ищем трек: {query} (в 4-х источниках)...")
         
-        track_info = search_track_with_retry(query)
+        # ===== НОВАЯ ЛОГИКА =====
+        tracks = search_tracks_by_title(query)
         
-        if track_info:
+        if tracks:
             bot.delete_message(message.chat.id, status_msg.message_id)
-            send_track_result(message, track_info)
+            
+            if len(tracks) == 1:
+                # Только один трек — сразу показываем
+                send_track_result(message, parse_track_data(tracks[0]))
+            else:
+                # Несколько треков — показываем список
+                send_track_selection(message, query, tracks)
         else:
             bot.delete_message(message.chat.id, status_msg.message_id)
             
@@ -3111,6 +3194,9 @@ def list_subscriptions_command(message: Message):
 # === ОСНОВНОЙ ОБРАБОТЧИК ТЕКСТА ===
 @bot.message_handler(func=lambda message: True)
 def handle_message(message: Message):
+    """Основной обработчик текстовых сообщений"""
+    
+    # Если это команда — пропускаем (обрабатывается другими обработчиками)
     if message.text.startswith('/'):
         return
     
@@ -3120,6 +3206,7 @@ def handle_message(message: Message):
         bot.reply_to(message, "❌ Слишком короткий запрос (минимум 1 символ)")
         return
     
+    # ===== ПРОВЕРЯЕМ, НЕ ЗАПРОС ЛИ ЭТО БИОГРАФИИ =====
     bio_keywords = ['биография', 'био', 'кто такой', 'кто такая', 'расскажи о', 'информация о']
     is_bio_request = any(keyword in query.lower() for keyword in bio_keywords)
     
@@ -3131,6 +3218,7 @@ def handle_message(message: Message):
             send_artist_bio(message, clean_query)
             return
     
+    # ===== ПРОВЕРЯЕМ, НЕ ЗАПРОС ЛИ ЭТО АЛЬБОМА =====
     album_keywords = ['альбом', 'album', 'сборник', 'пластинка']
     is_album_search = any(keyword in query.lower() for keyword in album_keywords)
     
@@ -3144,21 +3232,31 @@ def handle_message(message: Message):
                 send_album_result(message, album_info)
                 return
     
+    # ===== ОСНОВНОЙ ПОИСК ТРЕКОВ (НОВАЯ ЛОГИКА) =====
     try:
         bot.send_chat_action(message.chat.id, 'typing')
         
-        track_info = search_track_with_retry(query)
+        # 🔥 НОВОЕ: ищем ВСЕ треки с похожим названием
+        tracks = search_tracks_by_title(query)
         
-        if track_info:
-            send_track_result(message, track_info)
+        if tracks:
+            if len(tracks) == 1:
+                # Только один трек — сразу показываем
+                send_track_result(message, parse_track_data(tracks[0]))
+            else:
+                # Несколько треков — показываем список для выбора
+                send_track_selection(message, query, tracks)
             return
         
+        # ===== ЕСЛИ ТРЕКИ НЕ НАЙДЕНЫ — ПРОВЕРЯЕМ АЛЬБОМЫ =====
         album_info = search_album_with_retry(query)
         if album_info:
             send_album_result(message, album_info)
             return
         
-        bot.reply_to(message, 
+        # ===== НИЧЕГО НЕ НАШЛИ =====
+        bot.reply_to(
+            message,
             f"🔍 Не найдено: {query}\n\n"
             f"💡 Попробуйте:\n"
             f"• Уточнить название\n"
@@ -3168,9 +3266,11 @@ def handle_message(message: Message):
             f"• Использовать /albums <исполнитель>\n"
             f"• Использовать /bio <исполнитель>"
         )
+        
     except Exception as e:
         logger.error(f"Ошибка в handle_message: {e}")
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+
 
 # === ОБРАБОТЧИК CALLBACK ===
 @bot.callback_query_handler(func=lambda call: True)
@@ -3220,6 +3320,34 @@ def handle_callback(call):
             fake_msg = FakeMessage(call.message.chat.id, f"/concerts {artist_name}")
             concerts_command(fake_msg)
             bot.answer_callback_query(call.id, f"🎫 Концерты {artist_name}")
+            return
+
+        # === ОБРАБОТЧИК ВЫБОРА ТРЕКА ===
+        if call.data.startswith('select_track_'):
+            try:
+                track_id = int(call.data.replace('select_track_', ''))
+                track_info = user_track_cache.get(track_id)
+        
+                if not track_info:
+                    # Если нет в кэше — загружаем из Deezer
+                    url = f"https://api.deezer.com/track/{track_id}"
+                    response = requests.get(url, timeout=15)
+                    if response.status_code == 200:
+                        track_data = response.json()
+                        track_info = parse_track_data(track_data)
+                    else:
+                        bot.answer_callback_query(call.id, "❌ Трек не найден", show_alert=True)
+                        return
+        
+                bot.answer_callback_query(call.id, f"✅ {track_info['title']} — {track_info['artists']}")
+        
+                # Отправляем трек с обложкой
+                send_track_result(call.message, track_info)
+                return  # ← ВАЖНО: return, чтобы не обрабатывать дальше
+        
+        except Exception as e:
+            logger.error(f"Ошибка выбора трека: {e}")
+            bot.answer_callback_query(call.id, f"❌ Ошибка: {str(e)[:50]}")
             return
         
         if call.data.startswith('bio_concert_'):
