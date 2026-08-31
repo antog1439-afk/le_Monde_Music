@@ -944,82 +944,138 @@ def search_all_albums(query: str, max_pages: int = 10) -> List[Dict[str, Any]]:
 # ============================================================
 # === НОВАЯ ФУНКЦИЯ: ТОЧНЫЙ ПОИСК ПО НАЗВАНИЮ И ИСПОЛНИТЕЛЮ ===
 # ============================================================
-
 def search_tracks_by_title(query: str) -> List[Dict[str, Any]]:
-    """Ищет все треки с похожим названием ИЛИ исполнителем"""
+    """Ищет все треки с похожим названием (сначала Яндекс для русских)"""
     try:
         logger.info(f"🔍 search_tracks_by_title: {query}")
         
+        query_lower = query.lower().strip()
+        
+        # ===== 1. ПРОВЕРЯЕМ, РУССКИЙ ЛИ ЗАПРОС =====
+        russian_keywords = ['асия', 'кино', 'земфира', 'биг', 'бейби', 'тейп', 
+                           'моргенштерн', 'платина', 'скриптонит', 'огр']
+        
+        is_russian = any(keyword in query_lower for keyword in russian_keywords)
+        
+        results = []
+        
+        # ===== 2. ЕСЛИ РУССКИЙ — ИЩЕМ В ЯНДЕКС МУЗЫКЕ =====
+        if is_russian:
+            logger.info(f"🇷🇺 Русский запрос, ищем в Яндекс Музыке")
+            
+            # Разбираем запрос на исполнителя и трек
+            parts = query_lower.split()
+            artist = None
+            title = query_lower
+            
+            # Проверяем известных русских исполнителей
+            known_artists = ['big baby tape', 'асия', 'кино', 'земфира', 
+                           'моргенштерн', 'платина', 'скриптонит']
+            
+            for known in known_artists:
+                if known in query_lower:
+                    artist = known
+                    title = query_lower.replace(known, '').strip()
+                    break
+            
+            if not artist and len(parts) > 1:
+                # Если есть разделитель
+                if ' - ' in query or ' — ' in query:
+                    sep = ' - ' if ' - ' in query else ' — '
+                    parts = query.split(sep)
+                    if len(parts) >= 2:
+                        artist = parts[0].strip()
+                        title = parts[1].strip()
+                else:
+                    # Берём первое слово как исполнителя
+                    artist = parts[0]
+                    title = ' '.join(parts[1:])
+            
+            if artist and title:
+                # Ищем в Яндекс Музыке
+                yandex_result = search_yandex_music_track(artist, title)
+                
+                if yandex_result and yandex_result.get('found'):
+                    logger.info(f"✅ Найдено в Яндекс: {yandex_result['title']} — {yandex_result['artist']}")
+                    
+                    # Создаём фейковый трек для Deezer формата
+                    fake_track = {
+                        'id': 0,
+                        'title': yandex_result['title'],
+                        'artist': {'name': yandex_result['artist']},
+                        'album': {'title': 'Неизвестный альбом'},
+                        'duration': yandex_result.get('duration', 0),
+                        'preview': None,
+                        'explicit_lyrics': False,
+                        'rank': 999999
+                    }
+                    
+                    # Сохраняем в кэш
+                    track_data = parse_track_data(fake_track)
+                    track_data['source'] = 'yandex_music'
+                    track_data['links']['yandex'] = yandex_result['url']
+                    
+                    # Возвращаем как список с одним треком
+                    return [fake_track]
+        
+        # ===== 3. ЕСЛИ НЕ РУССКИЙ (ИЛИ НЕ НАШЛИ В ЯНДЕКС) — ИЩЕМ В DEEZER =====
+        logger.info(f"🌍 Поиск в Deezer: {query}")
         all_tracks = search_all_tracks(query, max_pages=3)
         
         if not all_tracks:
             logger.warning(f"❌ Ничего не найдено в Deezer: {query}")
             return []
         
-        logger.info(f"🔍 Найдено в Deezer: {len(all_tracks)} треков")
-        
-        query_lower = query.lower().strip()
+        # ===== 4. ФИЛЬТРУЕМ И СОРТИРУЕМ =====
         query_words = set(query_lower.split())
-        results = []
+        filtered_results = []
         
         for track in all_tracks:
             track_title = track.get('title', '').lower().strip()
             artist_name = track.get('artist', {}).get('name', '').lower().strip()
             
-            # Нормализуем
             track_title = ' '.join(track_title.split())
             artist_name = ' '.join(artist_name.split())
             
-            # ===== СЧИТАЕМ ОЧКИ =====
+            # Считаем очки
             score = 0
             
-            # 1. Проверяем название трека
+            # Проверяем название
             if query_lower in track_title:
                 score = 1.0
-                logger.info(f"📊 ТОЧНОЕ совпадение по названию: {track_title}")
             elif track_title in query_lower:
                 score = 0.8
-                logger.info(f"📊 Частичное совпадение по названию: {track_title}")
             else:
                 title_words = set(track_title.split())
                 match_count = len(title_words & query_words)
                 if match_count > 0:
                     score = match_count / len(query_words)
-                    logger.info(f"📊 Совпадение по словам: {track_title} (score: {score:.2f})")
             
-            # 2. Проверяем исполнителя (ДАЁМ БОЛЬШЕ ОЧКОВ!)
+            # Проверяем исполнителя
             artist_words = set(artist_name.split())
             artist_match = len(artist_words & query_words)
             if artist_match > 0:
                 artist_score = artist_match / len(query_words)
                 score = max(score, artist_score * 1.2)
-                logger.info(f"📊 Совпадение по исполнителю: {artist_name} (score: {score:.2f})")
             
-            # 3. Бонус за точное совпадение исполнителя
+            # Бонус за точное совпадение
             if artist_name in query_lower:
                 score = max(score, 0.9)
-                logger.info(f"📊 Точное совпадение исполнителя: {artist_name}")
-            
-            # 4. Бонус за точное совпадение названия
             if track_title in query_lower:
                 score = max(score, 0.8)
-                logger.info(f"📊 Точное совпадение названия: {track_title}")
             
-            logger.info(f"📊 Итоговый score для {track_title} — {artist_name}: {score:.2f}")
-            
-            # ===== ДОБАВЛЯЕМ В РЕЗУЛЬТАТЫ =====
             if score > 0.3:
-                results.append(track)
-                logger.info(f"✅ ДОБАВЛЕН: {track_title} — {artist_name} (score: {score:.2f})")
+                filtered_results.append(track)
+                logger.info(f"📊 {track_title} — {artist_name} (score: {score:.2f})")
         
         # Сортируем по популярности
-        results.sort(key=lambda x: x.get('rank', 0), reverse=True)
+        filtered_results.sort(key=lambda x: x.get('rank', 0), reverse=True)
         
-        logger.info(f"✅ Найдено {len(results)} подходящих треков")
-        return results[:10]
+        logger.info(f"✅ Найдено {len(filtered_results)} подходящих треков")
+        return filtered_results[:10]
         
     except Exception as e:
-        logger.error(f"Ошибка поиска треков по названию: {e}")
+        logger.error(f"Ошибка поиска треков: {e}")
         return []
 
 # ============================================================
