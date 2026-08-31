@@ -2583,7 +2583,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     
     artist_name = track_info['main_artist']
     
-    # ===== НОВОЕ: ПРОВЕРЯЕМ ПРЕДСТОЯЩИЙ РЕЛИЗ =====
+    # ===== ПРОВЕРЯЕМ ПРЕДСТОЯЩИЙ РЕЛИЗ =====
     upcoming_release = get_upcoming_release(artist_name)
     
     track_text = (
@@ -2626,7 +2626,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     else:
         track_text += f"\n\n🤖 <b>ИИ-факт:</b>\n{ai_fact}"
     
-    # ===== НОВОЕ: ДОБАВЛЯЕМ ИНФОРМАЦИЮ О ПРЕДСТОЯЩЕМ РЕЛИЗЕ =====
+    # ===== ДОБАВЛЯЕМ ИНФОРМАЦИЮ О ПРЕДСТОЯЩЕМ РЕЛИЗЕ =====
     if upcoming_release and upcoming_release.get('has_upcoming'):
         days = upcoming_release.get('days_left', 0)
         
@@ -2651,6 +2651,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     # ===== КЛАВИАТУРА =====
     keyboard = InlineKeyboardMarkup(row_width=2)
     
+    # ===== ПЛАТФОРМЫ (БЕЗ APPLE MUSIC) =====
     platform_buttons = []
     platform_emoji = {
         'yandex': '🎵',
@@ -2664,20 +2665,29 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
         'youtube': 'YouTube',
         'deezer': 'Deezer'
     }
+    platform_urls = {
+        'yandex': track_info['links'].get('yandex', ''),
+        'youtube_music': track_info['links'].get('youtube_music', ''),
+        'youtube': track_info['links'].get('youtube', ''),
+        'deezer': track_info['links'].get('deezer', '')
+    }
     
+    # Добавляем платформы
     for platform in ['yandex', 'youtube_music', 'youtube', 'deezer']:
-        if platform in track_info['links']:
+        if platform_urls.get(platform):
             platform_buttons.append(InlineKeyboardButton(
                 f"{platform_emoji.get(platform, '▶️')} {platform_names.get(platform, platform)}",
-                url=track_info['links'][platform]
+                url=platform_urls[platform]
             ))
     
+    # Выводим кнопки платформ по 2 в ряд
     for i in range(0, len(platform_buttons), 2):
         if i + 1 < len(platform_buttons):
             keyboard.row(platform_buttons[i], platform_buttons[i + 1])
         else:
             keyboard.row(platform_buttons[i])
     
+    # ===== ВТОРОЙ РЯД: 30 сек, Полный трек, Био =====
     track_id = track_info['track_id']
     track_title = track_info['title']
     
@@ -2692,6 +2702,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
         InlineKeyboardButton("🎤 Био", callback_data=bio_callback)
     )
     
+    # ===== ТРЕТИЙ РЯД: Релиз, Избранное, Все платформы =====
     keyboard.row(
         InlineKeyboardButton("📆 Релиз", callback_data=release_callback),
         InlineKeyboardButton("⭐ Избранное", callback_data=fav_callback),
@@ -2701,6 +2712,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
         )
     )
     
+    # ===== ЧЕТВЁРТЫЙ РЯД: Концерты =====
     concert_info = check_concerts_yandex_music(artist_name)
     encoded_name = urllib.parse.quote(artist_name)
     
@@ -2714,8 +2726,10 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
         )
     )
     
+    # ===== СОХРАНЯЕМ В КЭШ =====
     user_track_cache[track_id] = track_info
     
+    # ===== ОТПРАВЛЯЕМ =====
     cover_data = get_cover_data(track_info)
     
     try:
@@ -2744,10 +2758,10 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
             
             simple_keyboard = InlineKeyboardMarkup(row_width=1)
             for platform in ['yandex', 'youtube_music', 'youtube', 'deezer']:
-                if platform in track_info['links']:
+                if platform_urls.get(platform):
                     simple_keyboard.add(InlineKeyboardButton(
                         f"▶️ {platform_names.get(platform, platform)}",
-                        url=track_info['links'][platform]
+                        url=platform_urls[platform]
                     ))
             
             bot.send_message(
