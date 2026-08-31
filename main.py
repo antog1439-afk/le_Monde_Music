@@ -2646,7 +2646,9 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     # ===== КЛАВИАТУРА =====
     keyboard = InlineKeyboardMarkup(row_width=2)
     
-    # ===== ПЛАТФОРМЫ (БЕЗ APPLE MUSIC) =====
+    # ===== РЯД 1: ПЛАТФОРМЫ (Яндекс, YouTube Music, YouTube, Deezer) =====
+    # Как на фото: [Яндекс.M...] [YouTube M...]
+    #              [YouTube] [Deezer]
     platform_buttons = []
     platform_emoji = {
         'yandex': '🎵',
@@ -2667,22 +2669,22 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
         'deezer': track_info['links'].get('deezer', '')
     }
     
-    # Добавляем платформы
+    # Добавляем платформы (БЕЗ APPLE MUSIC)
     for platform in ['yandex', 'youtube_music', 'youtube', 'deezer']:
         if platform_urls.get(platform):
             platform_buttons.append(InlineKeyboardButton(
-                f"{platform_emoji.get(platform, '▶️')} {platform_names.get(platform, platform)}",
+                f"{platform_names.get(platform, platform)}",
                 url=platform_urls[platform]
             ))
     
-    # Выводим кнопки платформ по 2 в ряд
+    # Выводим кнопки платформ по 2 в ряд (как на фото)
     for i in range(0, len(platform_buttons), 2):
         if i + 1 < len(platform_buttons):
             keyboard.row(platform_buttons[i], platform_buttons[i + 1])
         else:
             keyboard.row(platform_buttons[i])
     
-    # ===== ВТОРОЙ РЯД: 30 сек, Полный трек, Био =====
+    # ===== РЯД 2: 30 сек, Полный трек, Био =====
     track_id = track_info['track_id']
     track_title = track_info['title']
     
@@ -2692,22 +2694,22 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     fav_callback = generate_short_callback('fav', track_id, artist_name, track_title)
     
     keyboard.row(
-        InlineKeyboardButton("🎧 30 сек", callback_data=play_callback),
-        InlineKeyboardButton("🎵 Полный трек", callback_data=f"full_track_{track_id}"),
-        InlineKeyboardButton("🎤 Био", callback_data=bio_callback)
+        InlineKeyboardButton("30 сек", callback_data=play_callback),
+        InlineKeyboardButton("Полный трек", callback_data=f"full_track_{track_id}"),
+        InlineKeyboardButton("Био", callback_data=bio_callback)
     )
     
-    # ===== ТРЕТИЙ РЯД: Релиз, Избранное, Все платформы =====
+    # ===== РЯД 3: Релиз, Избранное, Все платформы (как на фото) =====
     keyboard.row(
-        InlineKeyboardButton("📆 Релиз", callback_data=release_callback),
-        InlineKeyboardButton("⭐ Избранное", callback_data=fav_callback),
+        InlineKeyboardButton("Релиз", callback_data=release_callback),
+        InlineKeyboardButton("Избранное", callback_data=fav_callback),
         InlineKeyboardButton(
-            "🔍 Все платформы",
+            "Все платформы",
             url=f"https://www.google.com/search?q={urllib.parse.quote(artist_name + ' ' + track_title + ' music')}"
         )
     )
     
-    # ===== ЧЕТВЁРТЫЙ РЯД: Концерты =====
+    # ===== РЯД 4: Концерты в Яндекс Музыке =====
     concert_info = check_concerts_yandex_music(artist_name)
     encoded_name = urllib.parse.quote(artist_name)
     
@@ -2716,7 +2718,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     
     keyboard.row(
         InlineKeyboardButton(
-            f"🎫 {concert_info['message']}",
+            f"Концерты в Яндекс Музыке",
             callback_data=f"show_concerts_{encoded_name}"
         )
     )
