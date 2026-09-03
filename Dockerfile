@@ -20,7 +20,7 @@ RUN groupadd --system --gid 10001 bot \
     && mkdir --parents /app/data \
     && chown --recursive bot:bot /app
 
-COPY --chown=bot:bot main.py ./
+COPY --chown=bot:bot main.py search_ranking.py ./
 
 USER bot
 

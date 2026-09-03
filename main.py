@@ -14,6 +14,8 @@ import threading
 from bs4 import BeautifulSoup
 import io
 
+from search_ranking import select_best_search_match
+
 import telebot
 from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, BotCommand
 
@@ -826,6 +828,167 @@ def parse_yandex_album_element(element, query: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         return None
 
+<<<<<<< HEAD
+=======
+# === РЕЗЕРВНЫЙ ПОИСК ЧЕРЕЗ APPLE SEARCH API ===
+def get_itunes_artwork_url(url: Optional[str], size: int = 600) -> Optional[str]:
+    if not url:
+        return None
+    return re.sub(r'/\d+x\d+bb\.', f'/{size}x{size}bb.', url)
+
+
+def parse_itunes_track_data(track: Dict[str, Any]) -> Dict[str, Any]:
+    artist_name = track.get('artistName', 'Неизвестный исполнитель')
+    track_title = track.get('trackName', 'Без названия')
+    album_title = track.get('collectionName', 'Неизвестный альбом')
+    track_id = int(track.get('trackId', 0))
+    duration = int(track.get('trackTimeMillis', 0) or 0) // 1000
+    release_date = (track.get('releaseDate') or '')[:10]
+    preview_url = track.get('previewUrl')
+    encoded_search = urllib.parse.quote(f'{artist_name} {track_title}')
+
+    result = {
+        'title': track_title,
+        'artists': artist_name,
+        'main_artist': artist_name,
+        'album': album_title,
+        'year': release_date[:4] if release_date else None,
+        'release_date': release_date,
+        'formatted_date': format_release_date(release_date),
+        'track_id': track_id,
+        'links': {
+            'apple_music': track.get('trackViewUrl') or track.get('collectionViewUrl'),
+            'yandex': f'https://music.yandex.ru/search?text={encoded_search}',
+            'youtube_music': f'https://music.youtube.com/search?q={encoded_search}',
+            'youtube': f'https://www.youtube.com/results?search_query={encoded_search}+music',
+            'deezer': f'https://www.deezer.com/search/{encoded_search}',
+        },
+        'preview_url': preview_url,
+        'duration': duration,
+        'duration_str': f'{duration // 60}:{duration % 60:02d}',
+        'cover_url': get_itunes_artwork_url(track.get('artworkUrl100')),
+        'explicit': track.get('trackExplicitness') == 'explicit',
+        'source': 'itunes',
+    }
+
+    result['links'] = {key: value for key, value in result['links'].items() if value}
+    if track_id:
+        user_track_cache[track_id] = result
+        if preview_url:
+            preview_cache[track_id] = preview_url
+    return result
+
+def search_itunes_track(query: str) -> Optional[Dict[str, Any]]:
+    try:
+        response = requests.get(
+            'https://itunes.apple.com/search',
+            params={
+                'term': query,
+                'entity': 'song',
+                'limit': 25,
+                'country': ITUNES_COUNTRY,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        tracks = [
+            item for item in response.json().get('results', [])
+            if item.get('kind') == 'song' and item.get('trackId')
+        ]
+        if not tracks:
+            return None
+
+        best_track = select_best_search_match(
+            query,
+            tracks,
+            title_field='trackName',
+            artist_field='artistName',
+        )
+        if not best_track:
+            return None
+
+        logger.info('✅ Трек найден через Apple Search API')
+        return parse_itunes_track_data(best_track)
+    except Exception as e:
+        logger.warning(f'Apple Search API недоступен для трека: {e}')
+        return None
+
+def search_itunes_album(query: str) -> Optional[Dict[str, Any]]:
+    try:
+        response = requests.get(
+            'https://itunes.apple.com/search',
+            params={
+                'term': query,
+                'entity': 'album',
+                'limit': 15,
+                'country': ITUNES_COUNTRY,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        albums = [
+            item for item in response.json().get('results', [])
+            if item.get('collectionType') == 'Album' and item.get('collectionId')
+        ]
+        if not albums:
+            return None
+
+        album = select_best_search_match(
+            query,
+            albums,
+            title_field='collectionName',
+            artist_field='artistName',
+        )
+        if not album:
+            return None
+
+        album_id = int(album['collectionId'])
+        release_date = (album.get('releaseDate') or '')[:10]
+        tracks = []
+
+        try:
+            lookup_response = requests.get(
+                'https://itunes.apple.com/lookup',
+                params={
+                    'id': album_id,
+                    'entity': 'song',
+                    'country': ITUNES_COUNTRY,
+                },
+                timeout=20,
+            )
+            lookup_response.raise_for_status()
+            for item in lookup_response.json().get('results', []):
+                if item.get('kind') != 'song' or not item.get('trackId'):
+                    continue
+                parsed_track = parse_itunes_track_data(item)
+                tracks.append({
+                    'id': parsed_track['track_id'],
+                    'title': parsed_track['title'],
+                    'duration': parsed_track['duration'],
+                    'preview': parsed_track['preview_url'],
+                    'artist': parsed_track['main_artist'],
+                })
+        except Exception as e:
+            logger.warning(f'Не удалось загрузить треклист Apple Music: {e}')
+
+        logger.info('✅ Альбом найден через Apple Search API')
+        return {
+            'id': album_id,
+            'title': album.get('collectionName', 'Без названия'),
+            'artist': album.get('artistName', 'Неизвестный исполнитель'),
+            'cover_url': get_itunes_artwork_url(album.get('artworkUrl100')),
+            'year': release_date[:4] if release_date else None,
+            'release_date': release_date,
+            'track_count': album.get('trackCount', len(tracks)),
+            'tracks': tracks[:30],
+            'link': album.get('collectionViewUrl'),
+            'source': 'itunes',
+        }
+    except Exception as e:
+        logger.warning(f'Apple Search API недоступен для альбома: {e}')
+        return None
+
+>>>>>>> b0e3032 (fix music search)
 # === УЛУЧШЕННАЯ ФУНКЦИЯ ПОИСКА ВСЕХ ТРЕКОВ ===
 def search_all_tracks(query: str, max_pages: int = 15) -> List[Dict[str, Any]]:
     all_tracks = []
@@ -1326,6 +1489,7 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
         all_tracks = search_all_tracks(query, max_pages=3)
         
         if all_tracks:
+<<<<<<< HEAD
             # Фильтруем по ТОЧНОМУ совпадению (НЕ по популярности!)
             results = []
             query_words = set(query_lower.split())
@@ -1370,6 +1534,19 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
         
         logger.warning(f"❌ Не найден: {query}")
         return None
+=======
+            best_track = select_best_search_match(
+                query,
+                all_tracks,
+                title_field='title',
+                artist_field='artist',
+            )
+            if best_track:
+                return parse_track_data(best_track)
+        
+        logger.info('Deezer не дал релевантных результатов, используем Apple Search API')
+        return search_itunes_track(query)
+>>>>>>> b0e3032 (fix music search)
         
     except Exception as e:
         logger.error(f"Ошибка в search_track_full: {e}")
@@ -1385,20 +1562,21 @@ def search_album_full(query: str) -> Optional[Dict[str, Any]]:
         all_albums = search_all_albums(query, max_pages=10)
         
         if all_albums:
-            query_lower = query.lower()
-            
-            for album in all_albums:
-                album_title = album.get('title', '').lower()
-                
-                if album_title == query_lower or query_lower in album_title:
-                    return process_album_data(album)
-                
-                if query_lower.isdigit() and query_lower in album_title:
-                    return process_album_data(album)
-            
-            return process_album_data(all_albums[0])
+            best_album = select_best_search_match(
+                query,
+                all_albums,
+                title_field='title',
+                artist_field='artist',
+            )
+            if best_album:
+                return process_album_data(best_album)
         
+<<<<<<< HEAD
         return None
+=======
+        logger.info('Deezer не дал релевантных альбомов, используем Apple Search API')
+        return search_itunes_album(query)
+>>>>>>> b0e3032 (fix music search)
         
     except Exception as e:
         logger.error(f"Ошибка в search_album_full: {e}")
