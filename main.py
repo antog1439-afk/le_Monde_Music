@@ -828,8 +828,6 @@ def parse_yandex_album_element(element, query: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         return None
 
-<<<<<<< HEAD
-=======
 # === РЕЗЕРВНЫЙ ПОИСК ЧЕРЕЗ APPLE SEARCH API ===
 def get_itunes_artwork_url(url: Optional[str], size: int = 600) -> Optional[str]:
     if not url:
@@ -988,7 +986,6 @@ def search_itunes_album(query: str) -> Optional[Dict[str, Any]]:
         logger.warning(f'Apple Search API недоступен для альбома: {e}')
         return None
 
->>>>>>> b0e3032 (fix music search)
 # === УЛУЧШЕННАЯ ФУНКЦИЯ ПОИСКА ВСЕХ ТРЕКОВ ===
 def search_all_tracks(query: str, max_pages: int = 15) -> List[Dict[str, Any]]:
     all_tracks = []
@@ -1489,52 +1486,6 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
         all_tracks = search_all_tracks(query, max_pages=3)
         
         if all_tracks:
-<<<<<<< HEAD
-            # Фильтруем по ТОЧНОМУ совпадению (НЕ по популярности!)
-            results = []
-            query_words = set(query_lower.split())
-            
-            for track in all_tracks[:30]:
-                track_title = track.get('title', '').lower()
-                artist_name = track.get('artist', {}).get('name', '').lower()
-                
-                # Проверяем, есть ли слова из запроса в названии
-                title_words = set(track_title.split())
-                artist_words = set(artist_name.split())
-                
-                title_match = len(title_words & query_words)
-                artist_match = len(artist_words & query_words)
-                
-                # Если есть совпадение — добавляем
-                if title_match > 0 or artist_match > 0:
-                    results.append({
-                        'track': track,
-                        'score': title_match + artist_match,
-                        'title': track_title,
-                        'artist': artist_name
-                    })
-            
-            if results:
-                # Сортируем по количеству совпадений (НЕ по популярности!)
-                results.sort(key=lambda x: x['score'], reverse=True)
-                
-                # Если есть точное совпадение — возвращаем его
-                best = results[0]
-                if best['score'] >= 2:
-                    logger.info(f"✅ Найден похожий трек: {best['track'].get('title')}")
-                    return parse_track_data(best['track'])
-                
-                # Если нет — показываем список
-                logger.info(f"📋 Найдено {len(results)} вариантов")
-                return None
-        
-        # ============================================================
-        # ШАГ 4: НИЧЕГО НЕ НАШЛИ
-        # ============================================================
-        
-        logger.warning(f"❌ Не найден: {query}")
-        return None
-=======
             best_track = select_best_search_match(
                 query,
                 all_tracks,
@@ -1546,11 +1497,11 @@ def search_track_full(query: str) -> Optional[Dict[str, Any]]:
         
         logger.info('Deezer не дал релевантных результатов, используем Apple Search API')
         return search_itunes_track(query)
->>>>>>> b0e3032 (fix music search)
         
     except Exception as e:
         logger.error(f"Ошибка в search_track_full: {e}")
-        return None
+        logger.info('Поиск Deezer завершился ошибкой, используем Apple Search API')
+        return search_itunes_track(query)
 
 
 # ============================================================
@@ -1571,16 +1522,13 @@ def search_album_full(query: str) -> Optional[Dict[str, Any]]:
             if best_album:
                 return process_album_data(best_album)
         
-<<<<<<< HEAD
-        return None
-=======
         logger.info('Deezer не дал релевантных альбомов, используем Apple Search API')
         return search_itunes_album(query)
->>>>>>> b0e3032 (fix music search)
         
     except Exception as e:
         logger.error(f"Ошибка в search_album_full: {e}")
-        return None
+        logger.info('Поиск альбомов Deezer завершился ошибкой, используем Apple Search API')
+        return search_itunes_album(query)
 
 # === ОСТАЛЬНЫЕ ФУНКЦИИ ===
 def get_relative_time(release_date_str: str) -> Optional[str]:
@@ -3764,7 +3712,7 @@ def handle_callback(call):
             return
 
         # === ОБРАБОТЧИК ВЫБОРА ТРЕКА ===
-         if call.data.startswith('select_track_'):
+        if call.data.startswith('select_track_'):
             try:
                 track_id = int(call.data.replace('select_track_', ''))
         
@@ -3793,15 +3741,15 @@ def handle_callback(call):
                 except:
                     pass
         
-            # Отправляем трек с обложкой
-            bot.answer_callback_query(call.id, f"✅ {track_info['title']} — {track_info['artists']}")
-            send_track_result(call.message, track_info)
-            return
-        
-        except Exception as e:
-            logger.error(f"Ошибка выбора трека: {e}")
-            bot.answer_callback_query(call.id, f"❌ Ошибка: {str(e)[:50]}", show_alert=True)
-            return
+                # Отправляем трек с обложкой
+                bot.answer_callback_query(call.id, f"✅ {track_info['title']} — {track_info['artists']}")
+                send_track_result(call.message, track_info)
+                return
+
+            except Exception as e:
+                logger.error(f"Ошибка выбора трека: {e}")
+                bot.answer_callback_query(call.id, f"❌ Ошибка: {str(e)[:50]}", show_alert=True)
+                return
  
         
         if call.data.startswith('bio_concert_'):
