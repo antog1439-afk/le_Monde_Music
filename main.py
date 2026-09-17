@@ -5074,7 +5074,7 @@ def check_releases_command(message: Message):
         if found_releases:
             text = "🎉 <b>ПРЕДСТОЯЩИЕ РЕЛИЗЫ</b>\n\n"
             
-            for release in found_releases:г
+            for release in found_releases:
                 days = release.get('days_left', 0)
                 
                 if days == 0:
