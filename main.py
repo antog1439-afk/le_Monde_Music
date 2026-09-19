@@ -633,14 +633,15 @@ def search_yandex_music_track(artist: str, title: str) -> Optional[Dict[str, Any
 # === ОБНОВЛЁННАЯ ФУНКЦИЯ СКАЧИВАНИЯ ПОЛНОГО ТРЕКА ===
 # ====================================================
 
-def download_full_track_from_youtube(query: str, expected_duration: int = 0) -> Optional[bytes]:
+def download_full_track_from_youtube(query: str, expected_duration: int = 0, artist: str = "", title: str = "") -> Optional[bytes]:
     if not YT_DLP_AVAILABLE:
         return None
     
-    cache_key = f"{query.lower()}_{expected_duration}"
+    cache_key = f"{query.lower()}_{expected_duration}_{artist.lower()}_{title.lower()}"
     
     if cache_key in audio_cache:
         if time.time() - audio_cache_time.get(cache_key, 0) < 3600:
+            logger.info(f"✅ Из кэша: {title}")
             return audio_cache[cache_key]
     
     try:
@@ -657,7 +658,6 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0) -> 
             'geo_bypass_country': 'RU',
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
             }
         }
@@ -665,18 +665,24 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0) -> 
         client_configs = [
             {'player_client': ['ios']},
             {'player_client': ['android']},
-            {'player_client': ['mweb']},
             {'player_client': ['web']},
-            {'player_client': ['ios_embedded']},
-            {'player_client': ['android_embedded']},
         ]
         
+        # ✅ ytsearch10 — ищем 10 видео, а не 1!
         search_queries = [
-            f"ytsearch1:{query} official audio",
-            f"ytsearch1:{query} audio",
-            f"ytsearch1:{query} song",
-            f"ytsearch1:{query}",
+            f"ytsearch10:{artist} {title} official audio",
+            f"ytsearch10:{artist} {title}",
+            f"ytsearch10:{artist} - {title}",
         ]
+        
+        # Нормализация для сравнения
+        artist_lower = artist.lower().strip() if artist else ""
+        title_lower = title.lower().strip() if title else ""
+        artist_words = set(artist_lower.split())
+        title_words = set(title_lower.split())
+        
+        # Белый список каналов (официальные)
+        trusted_channel_keywords = ['topic', 'official', 'records', 'music', 'vevo', 'audio']
         
         for client in client_configs:
             for search_query in search_queries:
@@ -685,21 +691,49 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0) -> 
                     opts['extractor_args'] = {'youtube': client}
                     
                     with yt_dlp.YoutubeDL(opts) as ydl:
+                        logger.info(f"🔍 Поиск: {search_query} (client: {client['player_client']})")
                         info = ydl.extract_info(search_query, download=False)
                         
-                        if info and info.get('entries'):
-                            video = info['entries'][0]
+                        if not info or not info.get('entries'):
+                            continue
+                        
+                        logger.info(f"📊 Найдено {len(info['entries'])} видео")
+                        
+                        # ✅ ПЕРЕБИРАЕМ ВСЕ 10
+                        for video in info['entries']:
+                            if not video:
+                                continue
+                            
                             video_url = video.get('webpage_url')
                             duration = video.get('duration', 0)
-    
-                            # ✅ НОВАЯ ПРОВЕРКА: длительность должна совпадать с Deezer
+                            video_title = (video.get('title') or '').lower()
+                            channel = (video.get('uploader') or video.get('channel') or '').lower()
+                            
+                            if not video_url or not duration:
+                                continue
+                            
+                            # ===== ФИЛЬТР 1: ДЛИТЕЛЬНОСТЬ (строго!) =====
                             if expected_duration > 0:
                                 diff = abs(duration - expected_duration)
-                                if diff > 15:  # допуск 15 секунд
-                                    logger.warning(f"⚠️ Пропускаем: YouTube {duration}с vs Deezer {expected_duration}с (разница {diff}с)")
+                                if diff > 10:  # было 15, стало 10
+                                    logger.debug(f"⏱ Пропуск (длительность {duration}с vs {expected_duration}с): {video.get('title')}")
                                     continue
                             
-                            if duration and duration < 900 and video_url:
+                            # ===== ФИЛЬТР 2: ИСПОЛНИТЕЛЬ/НАЗВАНИЕ =====
+                            artist_in_channel = any(w in channel for w in artist_words if len(w) > 2)
+                            artist_in_title = any(w in video_title for w in artist_words if len(w) > 2)
+                            title_in_video = any(w in video_title for w in title_words if len(w) > 2)
+                            is_trusted = any(tc in channel for tc in trusted_channel_keywords)
+                            
+                            # Хотя бы ОДНО должно совпасть
+                            if not (artist_in_channel or artist_in_title or title_in_video or is_trusted):
+                                logger.debug(f"🚫 Пропуск (не совпало): {video.get('title')} | канал: {channel}")
+                                continue
+                            
+                            logger.info(f"✅ Подходит: {video.get('title')} | канал: {channel} | {duration}с")
+                            
+                            # Скачиваем
+                            try:
                                 with yt_dlp.YoutubeDL(opts) as ydl_download:
                                     ydl_download.extract_info(video_url, download=True)
                                     for ext in ['.m4a', '.webm', '.mp4', '.opus']:
@@ -710,51 +744,15 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0) -> 
                                             os.remove(filename)
                                             audio_cache[cache_key] = audio_data
                                             audio_cache_time[cache_key] = time.time()
-                                            logger.info(f"✅ Скачано через {client.get('player_client')}")
+                                            logger.info(f"✅ Скачано: {video.get('title')}")
                                             return audio_data
+                            except Exception as e:
+                                logger.warning(f"⚠️ Ошибка скачивания: {e}")
+                                continue
+                
                 except Exception as e:
                     logger.debug(f"Не сработало: {client} + {search_query}: {e}")
                     continue
-        
-        if os.path.exists('cookies.txt'):
-            for client in client_configs[:4]:
-                for search_query in search_queries[:2]:
-                    try:
-                        opts = ydl_base_opts.copy()
-                        opts['cookiefile'] = 'cookies.txt'
-                        opts['extractor_args'] = {'youtube': client}
-                        
-                        with yt_dlp.YoutubeDL(opts) as ydl:
-                            info = ydl.extract_info(search_query, download=False)
-                            
-                            if info and info.get('entries'):
-                                video = info['entries'][0]
-                                video_url = video.get('webpage_url')
-                                duration = video.get('duration', 0)
-
-                                # ✅ Та же проверка
-                                if expected_duration > 0:
-                                    diff = abs(duration - expected_duration)
-                                    if diff > 15:
-                                        logger.warning(f"⚠️ Пропускаем (cookies): YouTube {duration}с vs Deezer {expected_duration}с")
-                                        continue
-                                
-                                if duration and duration < 900 and video_url:
-                                    with yt_dlp.YoutubeDL(opts) as ydl_download:
-                                        ydl_download.extract_info(video_url, download=True)
-                                        for ext in ['.m4a', '.webm', '.mp4', '.opus']:
-                                            filename = f"temp_audio{ext}"
-                                            if os.path.exists(filename):
-                                                with open(filename, 'rb') as f:
-                                                    audio_data = f.read()
-                                                os.remove(filename)
-                                                audio_cache[cache_key] = audio_data
-                                                audio_cache_time[cache_key] = time.time()
-                                                logger.info(f"✅ Скачано через cookies.txt с клиентом {client.get('player_client')}")
-                                                return audio_data
-                    except Exception as e:
-                        logger.debug(f"Не сработало: cookies.txt + {client} + {search_query}: {e}")
-                        continue
         
         return None
         
@@ -4230,12 +4228,14 @@ def handle_callback(call):
                 )
                 
                 # ✅ Уточняем запрос + передаём длительность
-                query = f"{track_info['main_artist']} {track_info['title']} official audio"
+                query = f"{track_info['main_artist']} {track_info['title']}"
                 expected_duration = track_info.get('duration', 0)
-                logger.info(f"🎵 Ищем полный трек: {query} (ожидаемая длительность: {expected_duration}с)")
-                
-                audio_data = download_full_track_from_youtube(query, expected_duration)
-                
+                artist = track_info['main_artist']
+                title = track_info['title']
+
+                logger.info(f"🎵 Ищем полный трек: {artist} — {title} ({expected_duration}с)")
+
+                audio_data = download_full_track_from_youtube(query, expected_duration, artist, title)
                 try:
                     bot.delete_message(call.message.chat.id, status_msg.message_id)
                 except:
