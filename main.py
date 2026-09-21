@@ -668,21 +668,23 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
             {'player_client': ['web']},
         ]
         
-        # ✅ ytsearch10 — ищем 10 видео, а не 1!
         search_queries = [
             f"ytsearch10:{artist} {title} official audio",
             f"ytsearch10:{artist} {title}",
             f"ytsearch10:{artist} - {title}",
         ]
         
-        # Нормализация для сравнения
+        # Нормализация
         artist_lower = artist.lower().strip() if artist else ""
         title_lower = title.lower().strip() if title else ""
-        artist_words = set(artist_lower.split())
-        title_words = set(title_lower.split())
+        artist_words = set(w for w in artist_lower.split() if len(w) > 2)
+        title_words = set(w for w in title_lower.split() if len(w) > 2)
         
-        # Белый список каналов (официальные)
-        trusted_channel_keywords = ['topic', 'official', 'records', 'music', 'vevo', 'audio']
+        # Плохие слова
+        bad_words = ['remix', 'cover', 'кавер', 'live', 'концерт', 'ремикс',
+                     'parody', 'пародия', 'instrumental', 'минус', 'минусовка',
+                     'slowed', 'reverb', 'speed up', 'nightcore', 'mashup',
+                     'премьера', 'premiere', 'teaser', 'тизер']
         
         for client in client_configs:
             for search_query in search_queries:
@@ -691,7 +693,7 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
                     opts['extractor_args'] = {'youtube': client}
                     
                     with yt_dlp.YoutubeDL(opts) as ydl:
-                        logger.info(f"🔍 Поиск: {search_query} (client: {client['player_client']})")
+                        logger.info(f"🔍 Поиск: {search_query}")
                         info = ydl.extract_info(search_query, download=False)
                         
                         if not info or not info.get('entries'):
@@ -699,7 +701,9 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
                         
                         logger.info(f"📊 Найдено {len(info['entries'])} видео")
                         
-                        # ✅ ПЕРЕБИРАЕМ ВСЕ 10
+                        # Собираем кандидатов с приоритетом
+                        candidates = []
+                        
                         for video in info['entries']:
                             if not video:
                                 continue
@@ -712,28 +716,56 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
                             if not video_url or not duration:
                                 continue
                             
-                            # ===== ФИЛЬТР 1: ДЛИТЕЛЬНОСТЬ (строго!) =====
+                            # ===== ФИЛЬТР 1: ДЛИТЕЛЬНОСТЬ =====
                             if expected_duration > 0:
                                 diff = abs(duration - expected_duration)
-                                if diff > 10:  # было 15, стало 10
-                                    logger.debug(f"⏱ Пропуск (длительность {duration}с vs {expected_duration}с): {video.get('title')}")
+                                if diff > 10:
+                                    logger.debug(f"⏱ Пропуск (длит. {duration}с vs {expected_duration}с): {video.get('title')}")
                                     continue
                             
-                            # ===== ФИЛЬТР 2: ИСПОЛНИТЕЛЬ/НАЗВАНИЕ =====
-                            artist_in_channel = any(w in channel for w in artist_words if len(w) > 2)
-                            artist_in_title = any(w in video_title for w in artist_words if len(w) > 2)
-                            title_in_video = any(w in video_title for w in title_words if len(w) > 2)
-                            is_trusted = any(tc in channel for tc in trusted_channel_keywords)
-                            
-                            # Хотя бы ОДНО должно совпасть
-                            if not (artist_in_channel or artist_in_title or title_in_video or is_trusted):
-                                logger.debug(f"🚫 Пропуск (не совпало): {video.get('title')} | канал: {channel}")
+                            # ===== ФИЛЬТР 2: ПЛОХИЕ СЛОВА =====
+                            if any(bw in video_title for bw in bad_words):
+                                logger.debug(f"🚫 Пропуск (плохое слово): {video.get('title')}")
                                 continue
                             
-                            logger.info(f"✅ Подходит: {video.get('title')} | канал: {channel} | {duration}с")
+                            # ===== ФИЛЬТР 3: НАЗВАНИЕ ТРЕКА (ОБЯЗАТЕЛЬНО) =====
+                            if title_words:
+                                if len(title_words) <= 2:
+                                    # Для коротких названий (1-2 слова) — точное вхождение
+                                    if title_lower not in video_title:
+                                        logger.debug(f"🚫 Пропуск (нет точного названия '{title_lower}'): {video.get('title')}")
+                                        continue
+                                else:
+                                    # Для длинных — хотя бы одно слово
+                                    if not any(w in video_title for w in title_words):
+                                        logger.debug(f"🚫 Пропуск (нет названия трека): {video.get('title')}")
+                                        continue
                             
-                            # Скачиваем
+                            # ===== ФИЛЬТР 4: ИСПОЛНИТЕЛЬ =====
+                            artist_in_channel = any(w in channel for w in artist_words) if artist_words else False
+                            artist_in_title = any(w in video_title for w in artist_words) if artist_words else False
+                            
+                            if artist_words and not (artist_in_channel or artist_in_title):
+                                logger.debug(f"🚫 Пропуск (нет исполнителя): {video.get('title')} | канал: {channel}")
+                                continue
+                            
+                            # ===== ПРИОРИТЕТ (Topic > VEVO > Official) =====
+                            priority = 0
+                            if 'topic' in channel: priority = 4
+                            elif 'vevo' in channel: priority = 3
+                            elif 'official' in channel: priority = 2
+                            elif 'records' in channel: priority = 1
+                            
+                            candidates.append((priority, video_url, video.get('title'), duration))
+                            logger.info(f"✅ Кандидат (priority={priority}): {video.get('title')} | {duration}с")
+                        
+                        # Сортируем по приоритету
+                        candidates.sort(key=lambda x: x[0], reverse=True)
+                        
+                        # Скачиваем первого подходящего
+                        for priority, video_url, video_title_full, duration in candidates:
                             try:
+                                logger.info(f"⬇️ Скачиваем: {video_title_full}")
                                 with yt_dlp.YoutubeDL(opts) as ydl_download:
                                     ydl_download.extract_info(video_url, download=True)
                                     for ext in ['.m4a', '.webm', '.mp4', '.opus']:
@@ -744,10 +776,10 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
                                             os.remove(filename)
                                             audio_cache[cache_key] = audio_data
                                             audio_cache_time[cache_key] = time.time()
-                                            logger.info(f"✅ Скачано: {video.get('title')}")
+                                            logger.info(f"✅ Скачано: {video_title_full}")
                                             return audio_data
                             except Exception as e:
-                                logger.warning(f"⚠️ Ошибка скачивания: {e}")
+                                logger.warning(f"⚠️ Ошибка скачивания {video_title_full}: {e}")
                                 continue
                 
                 except Exception as e:
@@ -755,11 +787,10 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
                     continue
         
         return None
-        
     except Exception as e:
         logger.error(f"Ошибка скачивания аудио: {e}")
         return None
-
+    
 # === НОВАЯ ФУНКЦИЯ: ПОИСК В YOUTUBE MUSIC ===
 def search_youtube_music(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     results = []
