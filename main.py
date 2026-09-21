@@ -2342,6 +2342,7 @@ def get_all_artist_tracks(artist_name: str, limit: int = 200) -> Optional[List[D
 
 # === ФУНКЦИЯ ПОЛУЧЕНИЯ БИОГРАФИИ ИЗ ЯНДЕКС МУЗЫКИ ===
 def get_artist_bio_from_yandex(artist_name: str) -> Optional[Dict[str, Any]]:
+    """Получает биографию из Яндекс Музыки"""
     try:
         encoded_name = urllib.parse.quote(artist_name)
         url = f"https://music.yandex.ru/artist/{encoded_name}"
@@ -2367,6 +2368,7 @@ def get_artist_bio_from_yandex(artist_name: str) -> Optional[Dict[str, Any]]:
             'tracks': []
         }
         
+        # ===== 1. ИМЯ И ОПИСАНИЕ ИЗ JSON-LD =====
         scripts = soup.find_all('script', type='application/ld+json')
         for script in scripts:
             try:
@@ -2386,19 +2388,49 @@ def get_artist_bio_from_yandex(artist_name: str) -> Optional[Dict[str, Any]]:
             except:
                 pass
         
+        # ===== 2. BIO ИЗ META-ТЕГОВ (если JSON-LD не дал) =====
         if not result['bio']:
             meta = soup.find('meta', {'name': 'description'})
             if meta and meta.get('content'):
                 bio = meta['content']
+                # Чистим мусор
                 bio = re.sub(r'Слушайте|на Яндекс Музыке|бесплатно|онлайн|🎵', '', bio, flags=re.IGNORECASE)
                 bio = re.sub(r'\s+', ' ', bio).strip()
                 result['bio'] = bio
         
+        # ===== 3. BIO ИЗ OGG-ОПИСАНИЯ (главный источник!) =====
+        if not result['bio']:
+            # Яндекс хранит описание в meta property="og:description" или в блоке "О исполнителе"
+            og_desc = soup.find('meta', property='og:description')
+            if og_desc and og_desc.get('content'):
+                bio = og_desc['content']
+                bio = re.sub(r'Слушайте|на Яндекс Музыке|бесплатно|онлайн|🎵', '', bio, flags=re.IGNORECASE)
+                bio = re.sub(r'\s+', ' ', bio).strip()
+                if len(bio) > 50:
+                    result['bio'] = bio
+        
+        # ===== 4. ИЩЕМ РАСШИРЕННОЕ ОПИСАНИЕ В DIV-КАХ =====
+        if not result['bio'] or len(result['bio']) < 200:
+            # Ищем div с классом типа "about", "description", "biography"
+            for selector in [
+                re.compile(r'about|description|biography|bio', re.I),
+            ]:
+                for div in soup.find_all(['div', 'section'], class_=selector):
+                    text = div.get_text(' ', strip=True)
+                    if len(text) > 200 and 'Слушайте' not in text[:50]:
+                        result['bio'] = text[:1500]
+                        break
+                if result['bio'] and len(result['bio']) > 200:
+                    break
+        
+        # ===== 5. СЛУШАТЕЛИ =====
         text = soup.get_text()
-        match = re.search(r'(\d+[\s\d]*)\s*слушателей', text, re.IGNORECASE)
+        # "123 456 слушателей" или "1.2M слушателей"
+        match = re.search(r'(\d+[\s\d,.]*[KМM]?)\s*(слушател|прослушиван)', text, re.IGNORECASE)
         if match:
             result['listeners'] = match.group(1).strip()
         
+        # ===== 6. ФОТОГРАФИЯ =====
         if not result['photo_url']:
             photo_elem = soup.find('img', class_=re.compile(r'cover|avatar|photo|image|artist', re.I))
             if photo_elem:
@@ -2411,33 +2443,28 @@ def get_artist_bio_from_yandex(artist_name: str) -> Optional[Dict[str, Any]]:
                     photo_url = re.sub(r'/\d+x\d+/', '/400x400/', photo_url)
                     result['photo_url'] = photo_url
         
+        # ===== 7. СОЦСЕТИ =====
         social_patterns = {
-            'telegram': ['t.me', 'telegram', 'tg'],
+            'telegram': ['t.me', 'telegram'],
             'instagram': ['instagram.com', 'insta'],
             'youtube': ['youtube.com', 'youtu.be'],
             'vk': ['vk.com', 'vkontakte'],
             'tiktok': ['tiktok.com'],
-            'twitter': ['twitter.com', 'x.com'],
         }
         
         for link in soup.find_all('a', href=True):
             href = link.get('href', '')
-            text = link.text.strip()
             for platform, keywords in social_patterns.items():
-                if any(keyword in href.lower() for keyword in keywords):
-                    if href.startswith('/'):
-                        href = 'https://music.yandex.ru' + href
-                    if text:
-                        result['social_links'][platform] = {
-                            'url': href,
-                            'text': text
-                        }
+                if any(k in href.lower() for k in keywords):
+                    if platform not in result['social_links']:
+                        result['social_links'][platform] = href
                     break
         
+        logger.info(f"📻 Яндекс био: {len(result['bio'])} символов, слушателей: {result['listeners']}")
         return result
         
     except Exception as e:
-        logger.error(f"Ошибка получения биографии из Яндекс Музыки: {e}")
+        logger.error(f"Ошибка получения биографии из Яндекса: {e}")
         return None
 
 # === ФУНКЦИЯ ДЛЯ ОТПРАВКИ БИОГРАФИИ ===
@@ -2447,49 +2474,94 @@ def send_artist_bio(message: Message, artist_name: str):
     cache_key = artist_name.lower()
     if cache_key in user_artist_cache:
         info = user_artist_cache[cache_key]
+        source = info.get('source', 'deezer')
     else:
-        info = get_artist_bio_deezer(artist_name)
+        # ===== 1. СНАЧАЛА ЯНДЕКС МУЗЫКА =====
+        logger.info(f"🎤 Ищем биографию в Яндексе: {artist_name}")
+        yandex_info = get_artist_bio_from_yandex(artist_name)
+        
+        info = None
+        source = None
+        
+        if yandex_info and yandex_info.get('bio'):
+            # ✅ Есть биография из Яндекса
+            info = {
+                'name': yandex_info.get('name', artist_name),
+                'bio': yandex_info.get('bio', ''),
+                'picture': yandex_info.get('photo_url'),
+                'link': f"https://music.yandex.ru/search?text={urllib.parse.quote(artist_name)}",
+                'nb_fan': None,  # у Яндекса нет такого поля
+                'nb_album': None,
+                'listeners': yandex_info.get('listeners'),
+                'source': 'yandex'
+            }
+            source = 'yandex'
+            logger.info(f"✅ Биография из Яндекса ({len(info['bio'])} символов)")
+        else:
+            # ===== 2. FALLBACK: DEEZER =====
+            logger.info(f"⚠️ Яндекс не дал биографию, пробуем Deezer: {artist_name}")
+            deezer_info = get_artist_bio_deezer(artist_name)
+            
+            if deezer_info:
+                info = {
+                    'name': deezer_info.get('name', artist_name),
+                    'bio': deezer_info.get('bio', ''),
+                    'picture': deezer_info.get('picture'),
+                    'link': deezer_info.get('link', ''),
+                    'nb_fan': deezer_info.get('nb_fan', 0),
+                    'nb_album': deezer_info.get('nb_album', 0),
+                    'listeners': None,
+                    'source': 'deezer'
+                }
+                source = 'deezer'
+                logger.info(f"✅ Биография из Deezer ({len(info['bio'])} символов)")
+        
         if info:
             user_artist_cache[cache_key] = info
     
+    # ===== ЕСЛИ НИЧЕГО НЕ НАШЛИ =====
     if not info:
         bot.reply_to(
             message,
             f"❌ Не удалось найти информацию об исполнителе: {artist_name}\n\n"
             f"💡 Попробуйте уточнить имя\n\n"
-            f"🔍 <a href='https://www.deezer.com/search/{urllib.parse.quote(artist_name)}'>Поиск в Deezer</a>",
+            f"🔍 <a href='https://music.yandex.ru/search?text={urllib.parse.quote(artist_name)}'>Поиск в Яндекс Музыке</a>",
             parse_mode='HTML',
             disable_web_page_preview=True
         )
         return
     
+    # ===== ФОРМИРУЕМ ТЕКСТ =====
     bio_text = f"🎤 <b>{info['name']}</b>\n\n"
     
     if info.get('bio'):
         bio = info['bio']
-        if len(bio) > 800:
-            bio = bio[:800] + "..."
+        if len(bio) > 1200:  # ✅ Немного увеличим лимит (Яндекс даёт больше)
+            bio = bio[:1200] + "..."
         bio_text += f"{bio}\n\n"
     else:
         bio_text += "📝 Биография временно недоступна.\n\n"
     
+    # Статистика (зависит от источника)
     if info.get('nb_fan'):
         bio_text += f"👥 Фанатов: {info['nb_fan']:,}\n"
     if info.get('nb_album'):
         bio_text += f"💿 Альбомов: {info['nb_album']}\n"
+    if info.get('listeners'):
+        bio_text += f"🎧 Слушателей в месяц: {info['listeners']}\n"
     
-    bio_text += f"\n📡 Источник: Deezer"
+    # ✅ Источник
+    if source == 'yandex':
+        bio_text += f"\n📡 Источник: Яндекс Музыка"
+    else:
+        bio_text += f"\n📡 Источник: Deezer"
     
+    # ===== КЛАВИАТУРА =====
     keyboard = InlineKeyboardMarkup(row_width=2)
     
-    if info.get('link'):
-        keyboard.add(InlineKeyboardButton(
-            "🎧 Подробнее на Deezer",
-            url=info['link']
-        ))
-    
+    # Кнопки платформ
     keyboard.add(InlineKeyboardButton(
-        "🔍 Яндекс.Музыка",
+        "🎵 Яндекс.Музыка",
         url=f"https://music.yandex.ru/search?text={urllib.parse.quote(info['name'])}"
     ))
     
@@ -2498,18 +2570,33 @@ def send_artist_bio(message: Message, artist_name: str):
         url=f"https://music.youtube.com/search?q={urllib.parse.quote(info['name'])}"
     ))
     
+    # Deezer — только если есть ссылка
+    if info.get('link') and 'deezer' in info['link'].lower():
+        keyboard.add(InlineKeyboardButton(
+            "🎧 Deezer",
+            url=info['link']
+        ))
+    
+    # ✅ ВСЕ ТРЕКИ И АЛЬБОМЫ
+    keyboard.add(InlineKeyboardButton(
+        "🎵 Все треки",
+        callback_data=generate_short_callback('search_artist', 0, info['name'], '')
+    ))
+    
     keyboard.add(InlineKeyboardButton(
         "📱 Открыть Mini App",
         web_app=WebAppInfo(url="https://antog1439-afk.github.io/Muzyka/")
     ))
     
+    # Концерты
     concert_info = check_concerts_yandex_music(artist_name)
-    encoded_name = urllib.parse.quote(artist_name)
+    concert_callback = generate_short_callback('concerts_show', 0, artist_name, '')
     keyboard.add(InlineKeyboardButton(
         concert_info['message'],
-        callback_data=f"show_concerts_{encoded_name}"
+        callback_data=concert_callback
     ))
     
+    # ===== ОТПРАВЛЯЕМ =====
     if info.get('picture'):
         try:
             photo_response = requests.get(info['picture'], timeout=15)
