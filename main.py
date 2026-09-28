@@ -3975,12 +3975,27 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
             time_str = nearest.get('time', '')
             date_short = format_concert_date_short(date) if date else ''
 
+            # ===== ССЫЛКА НА БИЛЕТ =====
+            concert_id = nearest.get('id')
+            ticket_url = nearest.get('ticket_url')
+
+            # Приоритет: ticket_url (afishaUrl) → ссылка по ID
+            if not ticket_url and concert_id:
+                ticket_url = f"https://music.yandex.ru/concert/{concert_id}"
+
             # Показываем в тексте
             track_text += f"\n\n🎫 <b>Ближайший концерт:</b>\n"
-            track_text += f"{date_short}"
-            if time_str:
-                track_text += f" · {time_str}"
-            track_text += f" · {city}\n"
+            if ticket_url:
+                # Делаем всю строку ссылкой
+                track_text += f'<a href="{ticket_url}">{date_short}'
+                if time_str:
+                    track_text += f' · {time_str}'
+                track_text += f' · {city}</a>\n'
+            else:
+                track_text += f"{date_short}"
+                if time_str:
+                    track_text += f" · {time_str}"
+                track_text += f" · {city}\n"
 
     concert_callback = generate_short_callback('concerts_show', 0, artist_name, '')
     keyboard.row(
