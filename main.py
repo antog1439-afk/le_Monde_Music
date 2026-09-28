@@ -3962,7 +3962,6 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
         )
     )
     
-    
     # ===== РЯД 4: Концерты в Яндекс Музыке =====
     concert_info = check_concerts_yandex_music(artist_name)
 
@@ -3971,17 +3970,47 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
         if concerts:
             nearest = concerts[0]  # ближайший
             city = nearest.get('city') or '—'
+            venue = nearest.get('venue') or ''
             date = nearest.get('date', '')
             time_str = nearest.get('time', '')
+            price = nearest.get('price', '')
+            age = nearest.get('age', '')
             date_short = format_concert_date_short(date) if date else ''
 
-            # Показываем в тексте
-            track_text += f"\n\n🎫 <b>Ближайший концерт:</b>\n"
-            track_text += f"{date_short}"
-            if time_str:
-                track_text += f" · {time_str}"
-            track_text += f" · {city}\n"
+            # ===== ССЫЛКА НА БИЛЕТ =====
+            concert_id = nearest.get('id')
+            ticket_url = nearest.get('ticket_url')
 
+            # Приоритет: ticket_url (afishaUrl) → ссылка по ID
+            if not ticket_url and concert_id:
+                ticket_url = f"https://music.yandex.ru/concert/{concert_id}"
+
+            # ===== ПОКАЗЫВАЕМ ПОЛНУЮ ИНФОРМАЦИЮ =====
+            track_text += f"\n\n🎫 <b>Ближайший концерт:</b>\n"
+            track_text += f"🏙 <b>{city}</b>\n"
+
+            if date_short:
+                track_text += f"📅 {date_short}"
+                if time_str:
+                    track_text += f" · {time_str}"
+                track_text += "\n"
+
+            if venue:
+                track_text += f"📍 {venue}\n"
+
+            if age:
+                track_text += f"🔞 {age}\n"
+
+            if price:
+                price_clean = re.sub(r'[^\d]', '', str(price)).strip()
+                if price_clean:
+                    track_text += f"💵 от {price_clean} ₽\n"
+                else:
+                    track_text += f"💵 {price}\n"
+
+            if ticket_url:
+                track_text += f"🔗 {ticket_url}\n"
+    
     concert_callback = generate_short_callback('concerts_show', 0, artist_name, '')
     keyboard.row(
         InlineKeyboardButton(
