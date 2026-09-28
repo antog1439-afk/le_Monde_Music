@@ -600,75 +600,123 @@ def _draw_ticket_icon(draw, x, y, size, color, bg_color):
 def make_track_banner_with_concert(cover_bytes: bytes, concert: dict, artist_name: str) -> Optional[bytes]:
     """
     🎨 Красивый баннер: жёлтая плашка с концертом + обложка трека снизу.
-    Возвращает PNG-байты.
+    • Дата и время — на первой строке
+    • Город — на второй строке (с адаптивным шрифтом)
     """
     if not PIL_AVAILABLE or not cover_bytes:
         return None
 
     try:
-        # ===== 1. Открываем и ресайзим обложку =====
+        # ===== 1. Обложка =====
         cover = Image.open(io.BytesIO(cover_bytes)).convert('RGB')
         cover_size = 600
         cover = cover.resize((cover_size, cover_size), Image.LANCZOS)
 
         # ===== 2. Параметры баннера =====
-        banner_height = 130
+        banner_height = 150
+        margin = 18
+        radius = 22
         total_height = cover_size + banner_height
         width = cover_size
 
-        # ===== 3. Создаём холст =====
+        # ===== 3. Холст =====
         img = Image.new('RGB', (width, total_height), color='#FFFFFF')
         draw = ImageDraw.Draw(img)
 
-        # ===== 4. Цвета (как в Яндексе) =====
-        banner_bg = (255, 235, 130)       # жёлтый
-        text_primary = (40, 30, 0)         # тёмно-коричневый
-        text_secondary = (110, 85, 20)     # коричневый
+        # ===== 4. Цвета =====
+        banner_bg = (255, 235, 130)
+        text_primary = (40, 30, 0)
+        text_secondary = (110, 85, 20)
 
-        # ===== 5. Плашка сверху =====
-        draw.rectangle([0, 0, width, banner_height], fill=banner_bg)
+        # ===== 5. Плашка со скруглением =====
+        _rounded_rectangle(draw, [margin, margin, width - margin, banner_height], radius, banner_bg)
 
-        # ===== 6. Иконка билета =====
-        icon_x, icon_y = 40, 35
-        icon_size = 55
-        _draw_ticket_icon(draw, icon_x, icon_y, icon_size, text_primary, banner_bg)
+        # ===== 6. Иконка билета (контурная) =====
+        icon_x, icon_y = margin + 24, margin + 36
+        icon_w, icon_h = 52, 38
+        draw.rounded_rectangle(
+            [icon_x, icon_y, icon_x + icon_w, icon_y + icon_h],
+            radius=8, outline=text_primary, width=3
+        )
+        # Перфорация на билете
+        draw.line(
+            [icon_x + 12, icon_y + 8, icon_x + 12, icon_y + icon_h - 8],
+            fill=text_primary, width=2
+        )
 
         # ===== 7. Шрифты =====
         try:
-            font_title = ImageFont.truetype(r"C:\Windows\Fonts\arialbd.ttf", 34)
-            font_details = ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf", 26)
+            font_title = ImageFont.truetype(r"C:\Windows\Fonts\arialbd.ttf", 30)
+            font_details = ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf", 22)
         except:
             try:
-                font_title = ImageFont.truetype("arial.ttf", 34)
-                font_details = ImageFont.truetype("arial.ttf", 26)
+                font_title = ImageFont.truetype("arialbd.ttf", 30)
+                font_details = ImageFont.truetype("arial.ttf", 22)
             except:
                 font_title = ImageFont.load_default()
                 font_details = font_title
 
-        # ===== 8. Текст на плашке =====
+        # ===== 8. Координаты текста =====
+        text_x = icon_x + icon_w + 24
+        available_width = width - text_x - margin - 10
+
+        # ===== 9. Заголовок «КОНЦЕРТ» =====
+        draw.text((text_x, margin + 20), "КОНЦЕРТ", fill=text_primary, font=font_title)
+
+        # ===== 10. Готовим данные =====
         city = concert.get('city') or '—'
         date = concert.get('date', '')
         time_str = concert.get('time', '')
-
         date_text = format_concert_date_short(date) if date else 'Дата уточняется'
 
-        # Заголовок «КОНЦЕРТ»
-        draw.text((120, 22), "КОНЦЕРТ", fill=text_primary, font=font_title)
-
-        # Детали
-        details_parts = [date_text]
+        # ===== 11. Строка 1: дата и время =====
+        line1 = f"{date_text}"
         if time_str:
-            details_parts.append(time_str)
-        if city:
-            details_parts.append(city)
-        details_line = ' · '.join(details_parts)
+            line1 += f" · {time_str}"
 
-        draw.text((120, 72), details_line, fill=text_secondary, font=font_details)
+        # Если дата+время не влезают — уменьшаем шрифт для строки 1
+        font_line1 = font_details
+        if font_line1.getbbox(line1)[2] > available_width:
+            for size in range(22, 13, -1):
+                try:
+                    test_font = ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf", size)
+                except:
+                    test_font = font_details
+                if test_font.getbbox(line1)[2] <= available_width:
+                    font_line1 = test_font
+                    break
 
-        # ===== 9. Вставляем обложку =====
+        draw.text((text_x, margin + 62), line1, fill=text_secondary, font=font_line1)
+
+        # ===== 12. Строка 2: город (адаптивный шрифт) =====
+        city_text = city
+        font_city = font_details
+
+        # Подбираем размер шрифта, чтобы город влез
+        if font_city.getbbox(city_text)[2] > available_width:
+            for size in range(22, 12, -1):
+                try:
+                    test_font = ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf", size)
+                except:
+                    test_font = font_details
+                if test_font.getbbox(city_text)[2] <= available_width:
+                    font_city = test_font
+                    break
+            else:
+                # Если даже минимальный шрифт не помог — обрезаем с многоточием
+                font_city = ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf", 12)
+                while len(city_text) > 3:
+                    city_text = city_text[:-1]
+                    if font_city.getbbox(city_text + "…")[2] <= available_width:
+                        city_text = city_text + "…"
+                        break
+
+        draw.text((text_x, margin + 96), city_text, fill=text_secondary, font=font_city)
+
+        # ===== 13. Обложка снизу =====
         img.paste(cover, (0, banner_height))
 
-        # ===== 10. Возвращаем байты =====
+        # ===== 14. Возвращаем байты =====
         buffer = io.BytesIO()
         img.save(buffer, format='PNG', optimize=True)
         return buffer.getvalue()
@@ -676,7 +724,6 @@ def make_track_banner_with_concert(cover_bytes: bytes, concert: dict, artist_nam
     except Exception as e:
         logger.error(f"Ошибка генерации баннера: {e}")
         return None
-
 
 
 def search_yandex_music_track(artist: str, title: str) -> Optional[Dict[str, Any]]:
