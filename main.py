@@ -6,8 +6,13 @@ import urllib.parse
 import time
 import re
 import hashlib
+import telebot
+from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, BotCommand
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+import asyncio
+import nodriver as uc
+from yandex_music import Client
 import requests
 import logging
 import threading
@@ -55,6 +60,21 @@ callback_counter = 0
 youtube_cache = {}
 audio_cache = {}
 audio_cache_time = {}
+
+# === ДЛЯ КОНЦЕРТОВ ===
+_artist_ids: Dict[str, int] = {}
+YANDEX_MUSIC_TOKEN = None
+try:
+    if os.path.exists('yandex_token.txt'):
+        with open('yandex_token.txt', 'r') as f:
+            YANDEX_MUSIC_TOKEN = f.read().strip()
+        logger.info("✅ Токен Яндекс Музыки загружен")
+    else:
+        logger.warning("⚠️ yandex_token.txt не найден!")
+except Exception as e:
+    logger.error(f"❌ Ошибка загрузки токена: {e}")
+
+_ym_client = None
 
 # === ПЫТАЕМСЯ ИМПОРТИРОВАТЬ YT-DLP ===
 try:
@@ -2620,267 +2640,487 @@ def send_artist_bio(message: Message, artist_name: str):
         disable_web_page_preview=True
     )
 
-# === ФУНКЦИИ ДЛЯ ФОРМАТИРОВАНИЯ ДАТЫ КОНЦЕРТОВ ===
+
+
+# === ФУНКЦИИ ДЛЯ ПАРСИНГА КОНЦЕРТОВ ===
+# ====================================================
+# === 🎤 КОНЦЕРТЫ (из Concerts Bot v2.0) ===
+# ====================================================
+
+concerts_cache: Dict[str, Any] = {}
+CONCERTS_CACHE_DURATION = 3600
+
+
+def safe_request(url, headers=None, timeout=15, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            return requests.get(url, headers=headers, timeout=timeout)
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError) as e:
+            logger.debug(f"⚠️ Попытка {attempt + 1}/{max_retries}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1.5)
+            else:
+                return None
+    return None
+
+
 def format_concert_date_short(date_str: str) -> str:
     if not date_str:
         return ''
-    
     try:
         months_ru = {
-            'Jan': 'янв', 'Feb': 'фев', 'Mar': 'мар', 'Apr': 'апр',
-            'May': 'май', 'Jun': 'июн', 'Jul': 'июл', 'Aug': 'авг',
-            'Sep': 'сен', 'Oct': 'окт', 'Nov': 'ноя', 'Dec': 'дек'
+            'Jan': 'января', 'Feb': 'февраля', 'Mar': 'марта', 'Apr': 'апреля',
+            'May': 'мая', 'Jun': 'июня', 'Jul': 'июля', 'Aug': 'августа',
+            'Sep': 'сентября', 'Oct': 'октября', 'Nov': 'ноября', 'Dec': 'декабря'
         }
         weekday_ru = {
             'Mon': 'пн', 'Tue': 'вт', 'Wed': 'ср', 'Thu': 'чт',
             'Fri': 'пт', 'Sat': 'сб', 'Sun': 'вс'
         }
-        
         date_formats = ['%Y-%m-%d', '%d.%m.%Y', '%d %B %Y', '%d %b %Y']
         for fmt in date_formats:
             try:
                 dt = datetime.strptime(date_str, fmt)
                 month_eng = dt.strftime('%b')
                 month_ru = months_ru.get(month_eng, month_eng.lower())
-                day = dt.strftime('%d')
+                day = dt.strftime('%d').lstrip('0')
                 weekday_eng = dt.strftime('%a')
-                weekday = weekday_ru.get(weekday_eng, weekday_eng.lower())
-                return f"{month_ru}{day}{weekday}"
+                weekday = weekday_ru.get(weekday_eng, '')
+                if weekday:
+                    return f"{day} {month_ru} ({weekday})"
+                return f"{day} {month_ru}"
             except:
                 continue
-        
         numbers = re.findall(r'\d+', date_str)
         if len(numbers) >= 2:
-            day = numbers[0]
+            day = numbers[0].lstrip('0')
             month_num = int(numbers[1])
-            months = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+            months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+                     'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
             if 1 <= month_num <= 12:
-                month_short = months[month_num - 1]
-                return f"{month_short}{day}"
-        
+                return f"{day} {months[month_num - 1]}"
         return date_str
     except:
         return date_str
 
-# === ФУНКЦИИ ДЛЯ ПАРСИНГА КОНЦЕРТОВ ===
-def parse_concerts_from_yandex(artist_name: str) -> List[Dict[str, Any]]:
-    try:
-        encoded_name = urllib.parse.quote(artist_name)
-        url = f"https://music.yandex.ru/artist/{encoded_name}?tab=concerts"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-        }
-        
-        response = requests.get(url, headers=headers, timeout=15)
-        
-        if response.status_code != 200:
-            return []
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        concerts = []
-        
-        concert_blocks = soup.find_all(['div', 'article'], class_=re.compile(r'concert|event|show|ticket|item', re.I))
-        
-        for block in concert_blocks:
-            concert = parse_concert_block(block)
-            if concert:
-                concerts.append(concert)
-        
-        if concerts:
-            return concerts
-        
-        concerts = get_concerts_from_afisha_api(artist_name)
-        return concerts
-        
-    except Exception as e:
-        logger.error(f"Ошибка парсинга концертов: {e}")
-        return []
 
-def parse_concert_block(block) -> Optional[Dict[str, Any]]:
+def get_ym_client():
+    global _ym_client
+    if _ym_client is None:
+        if not YANDEX_MUSIC_TOKEN:
+            return None
+        try:
+            _ym_client = Client(YANDEX_MUSIC_TOKEN).init()
+            logger.info("✅ Клиент Яндекс Музыки готов")
+        except Exception as e:
+            logger.error(f"❌ Ошибка клиента: {e}")
+            return None
+    return _ym_client
+
+
+def get_artist_cover_url_concerts(artist_id: int, size: str = "600x600") -> Optional[str]:
     try:
-        concert = {}
-        block_text = block.get_text(' ', strip=True)
-        
-        city_elem = block.find(['span', 'div'], class_=re.compile(r'city|town|place-city', re.I))
-        if city_elem:
-            concert['city'] = city_elem.text.strip()
-        
-        date_elem = block.find(['time', 'span'], class_=re.compile(r'date|time|datetime', re.I))
-        if date_elem:
-            date_text = date_elem.text.strip()
-            concert['date'] = date_text
-            concert['datetime'] = date_elem.get('datetime', '')
-            time_match = re.search(r'(\d{2}:\d{2})', date_text)
-            if time_match:
-                concert['time'] = time_match.group(1)
-        
-        venue_elem = block.find(['span', 'div'], class_=re.compile(r'venue|place|location|address', re.I))
-        if venue_elem:
-            concert['venue'] = venue_elem.text.strip()
-        
-        price_match = re.search(r'(\d+[\s\d]*)\s*[₽руб]', block_text)
-        if price_match:
-            concert['price'] = price_match.group(1).strip()
-        
-        age_match = re.search(r'(\d+\+)', block_text)
-        if age_match:
-            concert['age'] = age_match.group(1)
-        
-        cashback_match = re.search(r'Кешбэк\s*до\s*(\d+)%', block_text, re.IGNORECASE)
-        if cashback_match:
-            concert['cashback'] = f"Кешбэк до {cashback_match.group(1)}%"
-        
-        link_elem = block.find('a', href=re.compile(r'ticket|buy|order|afisha', re.I))
-        if link_elem:
-            href = link_elem.get('href', '')
-            if href.startswith('/'):
-                href = 'https://music.yandex.ru' + href
-            concert['ticket_url'] = href
-        
-        if not concert.get('city'):
-            cities = ['Москва', 'Санкт-Петербург', 'Екатеринбург', 'Казань', 'Новосибирск', 'Красноярск', 'Сочи']
-            for city in cities:
-                if city in block_text:
-                    concert['city'] = city
-                    break
-        
-        if concert.get('city') or concert.get('venue') or concert.get('date'):
-            return concert
-        
+        client = get_ym_client()
+        if not client:
+            return None
+        artist = client.artists([artist_id])[0]
+        if artist and artist.cover and artist.cover.uri:
+            return "https://" + artist.cover.uri.replace("%%", size)
     except Exception as e:
-        logger.warning(f"Ошибка парсинга блока: {e}")
-    
+        logger.error(f"Ошибка получения обложки: {e}")
     return None
 
-def get_concerts_from_afisha_api(artist_name: str) -> List[Dict[str, Any]]:
+
+def get_artist_description_concerts(artist_id: int, max_len: int = 600) -> Optional[str]:
     try:
-        encoded_name = urllib.parse.quote(artist_name)
-        url = f"https://afisha.yandex.ru/api/v2/events/?text={encoded_name}&type=concert"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json',
-        }
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            return []
-        
-        data = response.json()
-        concerts = []
-        
-        for event in data.get('items', []):
-            concert = {
-                'city': event.get('place', {}).get('address', {}).get('city', 'Москва'),
-                'venue': event.get('place', {}).get('name', ''),
-                'date': event.get('date', {}).get('text', ''),
-                'datetime': event.get('date', {}).get('value', ''),
-                'price': event.get('price', {}).get('text', ''),
-                'ticket_url': event.get('url', ''),
-                'age': event.get('age_restriction', ''),
-            }
-            if concert['datetime']:
-                time_match = re.search(r'(\d{2}:\d{2})', concert['datetime'])
-                if time_match:
-                    concert['time'] = time_match.group(1)
-            concerts.append(concert)
-        
-        return concerts
-        
+        client = get_ym_client()
+        if not client:
+            return None
+        artist = client.artists([artist_id])[0]
+        if not artist:
+            return None
+        desc = getattr(artist, 'description', None)
+        if not desc:
+            return None
+        text = desc.text if hasattr(desc, 'text') else str(desc)
+        if not text:
+            return None
+        paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
+        result = []
+        total = 0
+        for p in paragraphs:
+            if total + len(p) + 1 > max_len:
+                break
+            result.append(p)
+            total += len(p) + 1
+        if not result:
+            return paragraphs[0][:max_len].rstrip() + '…'
+        result_text = '\n\n'.join(result)
+        if len(result) < len(paragraphs):
+            result_text += '…'
+        return result_text
     except Exception as e:
-        logger.error(f"Ошибка получения данных с Афиши: {e}")
+        logger.error(f"Ошибка получения описания: {e}")
+    return None
+
+
+def get_wikipedia_bio_concerts(artist_name: str, max_len: int = 600) -> Optional[str]:
+    candidates = [
+        artist_name,
+        f"{artist_name} (певица)",
+        f"{artist_name} (певец)",
+        f"{artist_name} (музыкант)",
+        f"{artist_name} (рэпер)",
+        f"{artist_name} (группа)",
+    ]
+    headers = {'User-Agent': 'ConcertsBot/1.0'}
+    for lang in ('ru', 'en'):
+        for title in candidates:
+            try:
+                url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(title)}"
+                r = safe_request(url, headers=headers, timeout=10)
+                if not r or r.status_code != 200:
+                    continue
+                data = r.json()
+                extract = data.get('extract')
+                if not extract or data.get('type') == 'disambiguation':
+                    continue
+                paragraphs = [p.strip() for p in extract.split('\n') if p.strip()]
+                result, total = [], 0
+                for p in paragraphs:
+                    if total + len(p) + 1 > max_len:
+                        break
+                    result.append(p)
+                    total += len(p) + 1
+                if not result:
+                    return paragraphs[0][:max_len].rstrip() + '…'
+                text = '\n\n'.join(result)
+                if len(result) < len(paragraphs):
+                    text += '…'
+                return text
+            except Exception:
+                continue
+    return None
+
+
+async def get_concerts_via_nodriver(artist_name: str) -> List[Dict[str, Any]]:
+    browser = None
+    try:
+        client = get_ym_client()
+        artist_id = None
+        if client:
+            search_result = client.search(artist_name)
+            if search_result and search_result.artists and search_result.artists.results:
+                for artist in search_result.artists.results:
+                    if artist.name.lower() == artist_name.lower():
+                        artist_id = artist.id
+                        logger.info(f"✅ Найден точный: {artist.name} (ID: {artist_id})")
+                        break
+                if not artist_id:
+                    artist = search_result.artists.results[0]
+                    artist_id = artist.id
+                    logger.info(f"⚠️ Точного нет, берём: {artist.name} (ID: {artist_id})")
+
+        if not artist_id:
+            logger.error(f"❌ Не нашли ID для {artist_name}")
+            return []
+
+        # ✅ сохраняем artist_id для обложки/био
+        _artist_ids[artist_name.lower()] = artist_id
+
+        logger.info(f"🌐 Nodriver: открываем концерты для {artist_name}")
+        browser = await uc.start(
+            headless=True,
+            browser_executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        )
+
+        url = f"https://music.yandex.ru/artist/{artist_id}/concerts"
+        tab = await browser.get(url)
+        logger.info("⏳ Nodriver: ждём загрузки...")
+        await asyncio.sleep(8)
+
+        html = await tab.get_content()
+        logger.info(f"📄 HTML: {len(html)} символов")
+
+        concerts = parse_concerts_from_html(html)
+        return concerts
+    except Exception as e:
+        logger.error(f"❌ Ошибка Nodriver: {e}")
         return []
+    finally:
+        if browser:
+            try:
+                browser.stop()
+            except:
+                pass
+
+
+def parse_concerts_from_html(html: str) -> List[Dict[str, Any]]:
+    concerts = []
+
+    # ===== СПОСОБ 0: preloadedConcerts =====
+    try:
+        start_marker = '"preloadedConcerts"'
+        idx = html.find(start_marker)
+        if idx != -1:
+            concerts_idx = html.find('"concerts"', idx)
+            if concerts_idx != -1:
+                arr_start = html.find('[', concerts_idx)
+                if arr_start != -1:
+                    depth = 0
+                    in_string = False
+                    escape = False
+                    arr_end = -1
+                    for i in range(arr_start, len(html)):
+                        ch = html[i]
+                        if escape:
+                            escape = False
+                            continue
+                        if ch == '\\':
+                            escape = True
+                            continue
+                        if ch == '"':
+                            in_string = not in_string
+                            continue
+                        if in_string:
+                            continue
+                        if ch == '[':
+                            depth += 1
+                        elif ch == ']':
+                            depth -= 1
+                            if depth == 0:
+                                arr_end = i
+                                break
+                    if arr_end != -1:
+                        json_str = html[arr_start:arr_end + 1].replace('\\"', '"')
+                        concerts_data = json.loads(json_str)
+                        logger.info(f"✅ preloadedConcerts: найдено {len(concerts_data)} концертов")
+                        for c in concerts_data:
+                            if not isinstance(c, dict):
+                                continue
+                            dt_str = c.get('datetime', '')
+                            date = dt_str[:10] if dt_str else None
+                            time_str = dt_str[11:16] if 'T' in dt_str else None
+                            price = None
+                            if isinstance(c.get('minPrice'), dict):
+                                price = str(c['minPrice'].get('value', ''))
+                            elif c.get('minPrice'):
+                                price = str(c['minPrice'])
+                            concert = {
+                                'id': c.get('id'),
+                                'city': c.get('city'),
+                                'venue': c.get('place'),
+                                'address': c.get('address'),
+                                'date': date,
+                                'time': time_str,
+                                'price': price,
+                                'age': c.get('contentRating'),
+                                'cashback': None,
+                                'ticket_url': c.get('afishaUrl'),
+                            }
+                            if concert['city'] or concert['venue'] or concert['date']:
+                                concerts.append(concert)
+                        if concerts:
+                            return concerts
+    except Exception as e:
+        logger.error(f"preloadedConcerts ошибка: {e}")
+
+    # ===== СПОСОБ 1: STATE_PATCHES =====
+    patterns = [
+        r'\\u002Fartist\\u002FconcertsSubpage\\u002Fconcerts",\s*"value":(\[.*?\}\])',
+        r'/artist/concertsSubpage/concerts",\s*"value":(\[.*?\}\])',
+        r'"concerts"\s*:\s*(\[\s*\{.*?\}\s*\])',
+        r'concertsSubpage\\u002Fconcerts",\s*"value":(\[.*?\])',
+    ]
+    for pattern in patterns:
+        try:
+            match = re.search(pattern, html, re.DOTALL)
+            if not match:
+                continue
+            json_str = match.group(1).replace('\\u002F', '/').replace('\\"', '"')
+            concerts_data = json.loads(json_str)
+            if not isinstance(concerts_data, list):
+                continue
+            for c in concerts_data:
+                if not isinstance(c, dict):
+                    continue
+                if c.get('eventKind') and c['eventKind'] != 'concert':
+                    continue
+                dt_str = c.get('datetime', '') or c.get('startDate', '') or c.get('date', '')
+                date, time_str = None, None
+                if dt_str:
+                    date = dt_str[:10]
+                    if 'T' in dt_str:
+                        time_str = dt_str.split('T')[1][:5]
+                price = None
+                if c.get('price'):
+                    if isinstance(c['price'], dict):
+                        price = str(c['price'].get('value', ''))
+                    else:
+                        price = str(c['price'])
+                elif c.get('minPrice'):
+                    if isinstance(c['minPrice'], dict):
+                        price = str(c['minPrice'].get('value', ''))
+                    else:
+                        price = str(c['minPrice'])
+                city = c.get('city')
+                venue = c.get('place') or c.get('venue')
+                if isinstance(venue, dict):
+                    venue = venue.get('name')
+                concert = {
+                    'id': c.get('id'),
+                    'city': city,
+                    'venue': venue,
+                    'date': date,
+                    'time': time_str,
+                    'price': price,
+                    'age': c.get('contentRating') or c.get('age'),
+                    'cashback': None,
+                    'ticket_url': c.get('afishaUrl') or c.get('url') or c.get('ticketUrl'),
+                }
+                if concert['city'] or concert['venue'] or concert['date']:
+                    concerts.append(concert)
+            if concerts:
+                return concerts
+        except Exception as e:
+            logger.debug(f"Паттерн не сработал: {e}")
+            continue
+
+    # ===== СПОСОБ 2: JSON-LD =====
+    if not concerts:
+        pattern_ld = r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>'
+        for match in re.finditer(pattern_ld, html, re.DOTALL):
+            try:
+                data = json.loads(match.group(1))
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get('@type') not in ['Event', 'MusicEvent']:
+                        continue
+                    concert = {
+                        'city': None, 'venue': None, 'date': None, 'time': None,
+                        'price': None, 'age': None, 'cashback': None, 'ticket_url': None,
+                    }
+                    if item.get('location'):
+                        loc = item['location']
+                        if isinstance(loc, dict):
+                            if isinstance(loc.get('address'), dict):
+                                concert['city'] = loc['address'].get('addressLocality')
+                            concert['venue'] = loc.get('name')
+                    if item.get('startDate'):
+                        sd = str(item['startDate'])
+                        concert['date'] = sd[:10]
+                        if 'T' in sd:
+                            concert['time'] = sd.split('T')[1][:5]
+                    if concert['city'] or concert['venue'] or concert['date']:
+                        concerts.append(concert)
+            except:
+                continue
+
+    return concerts
+
+
+def parse_concerts_from_yandex(artist_name: str) -> List[Dict[str, Any]]:
+    """ГЛАВНАЯ функция парсинга концертов (Nodriver)."""
+    logger.info(f"🌐 Ищем концерты через Nodriver: {artist_name}")
+    try:
+        concerts = asyncio.run(get_concerts_via_nodriver(artist_name))
+        if concerts:
+            logger.info(f"✅ Nodriver дал {len(concerts)} концертов")
+            seen = set()
+            unique = []
+            for c in concerts:
+                key = (c.get('city', ''), c.get('date', ''), c.get('venue', ''))
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(c)
+            return unique
+    except Exception as e:
+        logger.error(f"❌ Nodriver не сработал: {e}")
+    return []
+
 
 def format_concerts_text(artist_name: str, concerts: List[Dict[str, Any]]) -> str:
     if not concerts:
-        return f"❌ Не найдено концертов у {artist_name}\n\n💡 Попробуйте позже или проверьте имя исполнителя"
-    
-    text = f"🎤 <b>{artist_name.upper()} – КОНЦЕРТЫ</b>\n"
+        return (
+            f"{artist_name.upper()}\n\n"
+            f"Концерты не найдены\n\n"
+            f"Возможные причины:\n"
+            f"• Концерты ещё не анонсированы\n"
+            f"• Исполнитель не гастролирует\n"
+            f"• Ошибка в написании имени"
+        )
+    text = f"🎤 <b>{artist_name.upper()} — КОНЦЕРТЫ</b>\n"
     text += f"Найдено: {len(concerts)}\n"
-    text += f"Страница в Яндекс.Музыке\n\n"
-    
+    text += "─────────────────────\n\n"
     for i, concert in enumerate(concerts, 1):
         text += f"{i}. "
-        
-        city = concert.get('city', 'Москва')
-        text += f"{city} "
-        
+        city = concert.get('city') or 'Город не указан'
+        text += f"<b>{city}</b>\n"
         date = concert.get('date', '')
         if date and date != 'Дата уточняется':
             date_short = format_concert_date_short(date)
             if date_short:
-                text += f"{date_short} "
-        
+                text += f"   📅 {date_short}"
+                time_str = concert.get('time', '')
+                if time_str:
+                    text += f" • {time_str}"
+                text += "\n"
         venue = concert.get('venue', '')
         if venue:
-            text += f"{venue} "
-        
-        time_str = concert.get('time', '')
-        if time_str:
-            text += f"• {time_str} "
-        
+            text += f"   📍 {venue}\n"
         age = concert.get('age', '')
         if age:
-            text += f"• {age} "
-        
-        cashback = concert.get('cashback', '')
-        if cashback:
-            text += f"• {cashback} "
-        
+            text += f"   🔞 {age}\n"
         price = concert.get('price', '')
         if price:
             price_clean = re.sub(r'[^\d]', '', str(price)).strip()
             if price_clean:
-                text += f"от {price_clean} ₽ "
+                text += f"   💵 от {price_clean} ₽\n"
             else:
-                text += f"{price} "
-        
-        if i < len(concerts):
-            text += "\n"
-    
-    if concerts:
-        text += "\n\nДата уточняется\n"
-        text += "Москва\n"
-        text += "500 ₽\n"
-        if concerts[0].get('ticket_url'):
-            text += "Билеты"
-    
+                text += f"   💵 {price}\n"
+        cid = concert.get('id')
+        if cid:
+            text += f"   🔗 https://music.yandex.ru/concert/{cid}\n"
+        text += "\n"
+    text += "─────────────────────\n"
+    text += f"Все концерты: https://afisha.yandex.ru/search?text={urllib.parse.quote(artist_name)}"
     return text
 
+
 def get_cached_concerts(artist_name: str) -> Dict[str, Any]:
+    """Возвращает dict для совместимости с check_concerts_yandex_music."""
     cache_key = artist_name.lower()
     current_time = time.time()
-    
+
     if cache_key in concerts_cache:
         cached_data, cached_time = concerts_cache[cache_key]
         if current_time - cached_time < CONCERTS_CACHE_DURATION:
             return cached_data
-    
+
     concerts = parse_concerts_from_yandex(artist_name)
-    
+
     result = {
         'artist': artist_name,
         'concerts': concerts,
         'count': len(concerts),
-        'formatted_text': format_concerts_text(artist_name, concerts)
+        'formatted_text': format_concerts_text(artist_name, concerts),
     }
-    
+
     concerts_cache[cache_key] = (result, current_time)
-    
     return result
 
-# === ФУНКЦИЯ КОНЦЕРТОВ ===
+
 def get_yandex_music_artist_link(artist_name: str) -> str:
-    encoded_name = urllib.parse.quote(artist_name)
-    return f"https://music.yandex.ru/artist/{encoded_name}"
+    return f"https://music.yandex.ru/artist/{urllib.parse.quote(artist_name)}"
+
 
 def get_yandex_music_concerts_link(artist_name: str) -> str:
-    encoded_name = urllib.parse.quote(artist_name)
-    return f"https://music.yandex.ru/artist/{encoded_name}?tab=concerts"
+    return f"https://music.yandex.ru/artist/{urllib.parse.quote(artist_name)}?tab=concerts"
+
 
 def check_concerts_yandex_music(artist_name: str) -> Dict[str, Any]:
     try:
@@ -2888,7 +3128,6 @@ def check_concerts_yandex_music(artist_name: str) -> Dict[str, Any]:
         artist_url = get_yandex_music_artist_link(artist_name)
         concerts_url = get_yandex_music_concerts_link(artist_name)
         has_concerts = concert_data['count'] > 0
-        
         return {
             'has_concerts': has_concerts,
             'url': artist_url,
@@ -2896,22 +3135,89 @@ def check_concerts_yandex_music(artist_name: str) -> Dict[str, Any]:
             'count': concert_data['count'],
             'message': f"🎫 Найдено {concert_data['count']} концертов" if has_concerts else "🎫 Концерты в Яндекс Музыке",
             'concerts': concert_data['concerts'],
-            'formatted_text': concert_data['formatted_text']
+            'formatted_text': concert_data['formatted_text'],
         }
-        
     except Exception as e:
         logger.error(f"Ошибка проверки концертов: {e}")
-        artist_url = get_yandex_music_artist_link(artist_name)
-        concerts_url = get_yandex_music_concerts_link(artist_name)
         return {
             'has_concerts': False,
-            'url': artist_url,
-            'concerts_url': concerts_url,
+            'url': get_yandex_music_artist_link(artist_name),
+            'concerts_url': get_yandex_music_concerts_link(artist_name),
             'count': 0,
             'message': "🎫 Концерты в Яндекс Музыке",
             'concerts': [],
-            'formatted_text': f"❌ Ошибка при поиске концертов {artist_name}"
+            'formatted_text': f"❌ Ошибка при поиске концертов {artist_name}",
         }
+
+
+def send_concerts(message: Message, artist_name: str):
+    """Отправка концертов с обложкой и био (как в Concerts Bot)."""
+    try:
+        bot.send_chat_action(message.chat.id, 'typing')
+
+        status_msg = bot.reply_to(message, f"🔍 Ищем концерты: <b>{artist_name}</b>...", parse_mode='HTML')
+
+        concert_data = get_cached_concerts(artist_name)
+        concerts = concert_data['concerts']
+        text = concert_data['formatted_text']
+
+        try:
+            bot.delete_message(message.chat.id, status_msg.message_id)
+        except:
+            pass
+
+        # 📖 Описание: Яндекс Музыка → Wikipedia
+        artist_id_for_desc = _artist_ids.get(artist_name.lower())
+        description = get_artist_description_concerts(artist_id_for_desc) if artist_id_for_desc else None
+        if not description:
+            description = get_wikipedia_bio_concerts(artist_name)
+
+        if description:
+            text = f"📖 {description}\n\n{text}"
+
+        # Клавиатура
+        keyboard = InlineKeyboardMarkup(row_width=1)
+        if concerts:
+            keyboard.add(InlineKeyboardButton(
+                "🔄 Обновить",
+                callback_data=generate_short_callback('refresh_concerts', 0, artist_name, '')
+            ))
+        keyboard.add(InlineKeyboardButton("🎤 Другой исполнитель", callback_data="new_artist"))
+
+        # 🌅 Обложка
+        cover_url = None
+        if artist_id_for_desc:
+            cover_url = get_artist_cover_url_concerts(artist_id_for_desc)
+
+        photo_sent = False
+        if cover_url and len(text) <= 1024:
+            try:
+                bot.send_photo(
+                    message.chat.id,
+                    photo=cover_url,
+                    caption=text,
+                    parse_mode='HTML',
+                    reply_markup=keyboard,
+                )
+                photo_sent = True
+                logger.info(f"✅ Концерты с обложкой для {artist_name}")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось с обложкой: {e}")
+
+        if not photo_sent:
+            bot.send_message(
+                message.chat.id,
+                text,
+                parse_mode='HTML',
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+            logger.info(f"✅ Концерты без обложки для {artist_name}")
+
+    except Exception as e:
+        logger.error(f"Ошибка отправки концертов: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+    
 
 # === ФУНКЦИИ ДЛЯ АЛЬБОМОВ ===
 def send_artist_albums(message: Message, artist_name: str, page: int = 0):
@@ -3901,10 +4207,11 @@ def all_tracks_command(message: Message):
         logger.error(f"Ошибка в alltracks_command: {e}")
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
 
+
 @bot.message_handler(commands=['concerts'])
 def concerts_command(message: Message):
     query = message.text.replace('/concerts', '', 1).strip()
-    
+
     if not query:
         bot.reply_to(
             message,
@@ -3912,71 +4219,9 @@ def concerts_command(message: Message):
             parse_mode='HTML'
         )
         return
+
+    send_concerts(message, query)
     
-    try:
-        bot.send_chat_action(message.chat.id, 'typing')
-        
-        if hasattr(message, 'message_id'):
-            status_msg = bot.reply_to(message, "🔍 Ищем концерты...")
-        
-        concert_data = get_cached_concerts(query)
-        
-        if 'status_msg' in locals() and status_msg and hasattr(status_msg, 'message_id'):
-            try:
-                bot.delete_message(message.chat.id, status_msg.message_id)
-            except:
-                pass
-        
-        keyboard = InlineKeyboardMarkup(row_width=2)
-        encoded_name = urllib.parse.quote(query)
-        
-        keyboard.add(InlineKeyboardButton(
-            "🎵 Яндекс Музыка",
-            url=f"https://music.yandex.ru/artist/{encoded_name}?tab=concerts"
-        ))
-        
-        keyboard.add(InlineKeyboardButton(
-            "🎫 Яндекс Афиша",
-            url=f"https://afisha.yandex.ru/search?text={encoded_name}"
-        ))
-        
-        keyboard.add(InlineKeyboardButton(
-            "🎤 Биография",
-            callback_data=f"bio_concert_{encoded_name}"
-        ))
-        
-        if concert_data['concerts']:
-            bot.send_message(
-                message.chat.id,
-                concert_data['formatted_text'],
-                parse_mode='HTML',
-                reply_markup=keyboard,
-                disable_web_page_preview=True
-            )
-        else:
-            text = f"🎤 <b>{query.upper()}</b>\n\n"
-            text += "❌ Концерты не найдены\n\n"
-            text += "💡 Возможные причины:\n"
-            text += "• Концерты ещё не анонсированы\n"
-            text += "• Исполнитель не гастролирует\n"
-            text += "• Ошибка в написании имени\n\n"
-            text += "🔍 Попробуйте поискать на Яндекс Афише"
-            
-            bot.send_message(
-                message.chat.id,
-                text,
-                parse_mode='HTML',
-                reply_markup=keyboard,
-                disable_web_page_preview=True
-            )
-        
-    except Exception as e:
-        logger.error(f"Ошибка в concerts_command: {e}")
-        bot.reply_to(
-            message,
-            f"❌ Ошибка при поиске концертов: {str(e)[:100]}",
-            parse_mode='HTML'
-        )
 
 @bot.message_handler(commands=['bio'])
 def bio_command(message: Message):
@@ -4226,21 +4471,14 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, f"🎫 Концерты {artist_name}")
             return
 
-        # ✅ НОВЫЙ ОБРАБОТЧИК для concerts_show (через storage)
+        
+        # ✅ ОБРАБОТЧИК concerts_show → send_concerts
         if call.data.startswith('concerts_show_'):
             callback_info = callback_storage.get(call.data, {})
             artist_name = callback_info.get('artist', '')
-            
             if artist_name:
-                class FakeMessage:
-                    def __init__(self, chat_id, text):
-                        self.chat = type('obj', (object,), {'id': chat_id})
-                        self.text = text
-                        self.reply_to = None
-                
-                fake_msg = FakeMessage(call.message.chat.id, f"/concerts {artist_name}")
-                concerts_command(fake_msg)
                 bot.answer_callback_query(call.id, f"🎫 Концерты {artist_name}")
+                send_concerts(call.message, artist_name)
             else:
                 bot.answer_callback_query(call.id, "❌ Исполнитель не найден", show_alert=True)
             return
@@ -4418,6 +4656,16 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "🎤 Загружаем биографию...")
             send_artist_bio(call.message, artist_name)
             return
+        
+        if call.data == 'new_artist':
+            bot.answer_callback_query(call.id, "✍️ Напишите имя")
+            bot.send_message(
+                call.message.chat.id,
+                "✍️ <b>Напишите имя исполнителя</b>\n\nНапример: <i>Баста</i>",
+                parse_mode='HTML'
+            )
+            return
+
 
        # === ОБРАБОТЧИК ОТМЕНЫ ===
         if call.data == 'cancel_search':
@@ -4459,6 +4707,23 @@ def handle_callback(call):
         
         elif action == 'release':
             handle_release_date(call, track_id)
+
+        elif action == 'refresh_concerts':
+            callback_info = callback_storage.get(call.data, {})
+            artist_name = callback_info.get('artist', '')
+            if artist_name:
+                cache_key = artist_name.lower()
+                if cache_key in concerts_cache:
+                    del concerts_cache[cache_key]
+                bot.answer_callback_query(call.id, "🔄 Обновляем...")
+                try:
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                except:
+                    pass
+                send_concerts(call.message, artist_name)
+            else:
+                bot.answer_callback_query(call.id, "❌ Исполнитель не найден")
+            return
         
         elif action == 'fav':
             bot.answer_callback_query(
