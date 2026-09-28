@@ -2940,6 +2940,7 @@ async def get_concerts_via_nodriver(artist_name: str) -> List[Dict[str, Any]]:
         logger.info(f"🌐 Nodriver: открываем концерты для {artist_name}")
         browser = await uc.start(
             headless=True,
+            sandbox=False,
             browser_executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe"
         )
 
