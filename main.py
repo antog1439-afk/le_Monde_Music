@@ -572,6 +572,113 @@ def _get_minimal_cover_png() -> bytes:
     )
     return base64.b64decode(tiny_png_base64)
 
+# ====================================================
+# === 🎨 БАННЕР С КОНЦЕРТОМ (как в Яндекс Музыке) ===
+# ====================================================
+
+def _rounded_rectangle(draw, xy, radius, fill):
+    """Рисует прямоугольник со скруглёнными углами."""
+    x1, y1, x2, y2 = xy
+    draw.rectangle([x1 + radius, y1, x2 - radius, y2], fill=fill)
+    draw.rectangle([x1, y1 + radius, x2, y2 - radius], fill=fill)
+    draw.pieslice([x1, y1, x1 + 2 * radius, y1 + 2 * radius], 180, 270, fill=fill)
+    draw.pieslice([x2 - 2 * radius, y1, x2, y1 + 2 * radius], 270, 360, fill=fill)
+    draw.pieslice([x1, y2 - 2 * radius, x1 + 2 * radius, y2], 90, 180, fill=fill)
+    draw.pieslice([x2 - 2 * radius, y2 - 2 * radius, x2, y2], 0, 90, fill=fill)
+
+
+def _draw_ticket_icon(draw, x, y, size, color, bg_color):
+    """Рисует иконку билета (прямоугольник с вырезами)."""
+    # Основной прямоугольник
+    draw.rectangle([x, y, x + size, y + size * 0.7], fill=color)
+    # Вырезы по бокам (круги цвета фона)
+    r = size * 0.12
+    draw.ellipse([x - r, y + size * 0.35 - r, x + r, y + size * 0.35 + r], fill=bg_color)
+    draw.ellipse([x + size - r, y + size * 0.35 - r, x + size + r, y + size * 0.35 + r], fill=bg_color)
+
+
+def make_track_banner_with_concert(cover_bytes: bytes, concert: dict, artist_name: str) -> Optional[bytes]:
+    """
+    🎨 Красивый баннер: жёлтая плашка с концертом + обложка трека снизу.
+    Возвращает PNG-байты.
+    """
+    if not PIL_AVAILABLE or not cover_bytes:
+        return None
+
+    try:
+        # ===== 1. Открываем и ресайзим обложку =====
+        cover = Image.open(io.BytesIO(cover_bytes)).convert('RGB')
+        cover_size = 600
+        cover = cover.resize((cover_size, cover_size), Image.LANCZOS)
+
+        # ===== 2. Параметры баннера =====
+        banner_height = 130
+        total_height = cover_size + banner_height
+        width = cover_size
+
+        # ===== 3. Создаём холст =====
+        img = Image.new('RGB', (width, total_height), color='#FFFFFF')
+        draw = ImageDraw.Draw(img)
+
+        # ===== 4. Цвета (как в Яндексе) =====
+        banner_bg = (255, 235, 130)       # жёлтый
+        text_primary = (40, 30, 0)         # тёмно-коричневый
+        text_secondary = (110, 85, 20)     # коричневый
+
+        # ===== 5. Плашка сверху =====
+        draw.rectangle([0, 0, width, banner_height], fill=banner_bg)
+
+        # ===== 6. Иконка билета =====
+        icon_x, icon_y = 40, 35
+        icon_size = 55
+        _draw_ticket_icon(draw, icon_x, icon_y, icon_size, text_primary, banner_bg)
+
+        # ===== 7. Шрифты =====
+        try:
+            font_title = ImageFont.truetype(r"C:\Windows\Fonts\arialbd.ttf", 34)
+            font_details = ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf", 26)
+        except:
+            try:
+                font_title = ImageFont.truetype("arial.ttf", 34)
+                font_details = ImageFont.truetype("arial.ttf", 26)
+            except:
+                font_title = ImageFont.load_default()
+                font_details = font_title
+
+        # ===== 8. Текст на плашке =====
+        city = concert.get('city') or '—'
+        date = concert.get('date', '')
+        time_str = concert.get('time', '')
+
+        date_text = format_concert_date_short(date) if date else 'Дата уточняется'
+
+        # Заголовок «КОНЦЕРТ»
+        draw.text((120, 22), "КОНЦЕРТ", fill=text_primary, font=font_title)
+
+        # Детали
+        details_parts = [date_text]
+        if time_str:
+            details_parts.append(time_str)
+        if city:
+            details_parts.append(city)
+        details_line = ' · '.join(details_parts)
+
+        draw.text((120, 72), details_line, fill=text_secondary, font=font_details)
+
+        # ===== 9. Вставляем обложку =====
+        img.paste(cover, (0, banner_height))
+
+        # ===== 10. Возвращаем байты =====
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG', optimize=True)
+        return buffer.getvalue()
+
+    except Exception as e:
+        logger.error(f"Ошибка генерации баннера: {e}")
+        return None
+
+
+
 def search_yandex_music_track(artist: str, title: str) -> Optional[Dict[str, Any]]:
     """Ищет трек в Яндекс Музыке (возвращает информацию о треке)"""
     try:
@@ -3812,29 +3919,49 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     concert_info = check_concerts_yandex_music(artist_name)
 
     if concert_info['has_concerts']:
-        track_text += f"\n\n🎤 <b>У {artist_name} есть концерты!</b>"
+        concerts = concert_info.get('concerts', [])
+        if concerts:
+            nearest = concerts[0]  # ближайший
+            city = nearest.get('city') or '—'
+            date = nearest.get('date', '')
+            time_str = nearest.get('time', '')
+            date_short = format_concert_date_short(date) if date else ''
 
-    # ✅ Короткий callback через storage
+            # Показываем в тексте
+            track_text += f"\n\n🎫 <b>Ближайший концерт:</b>\n"
+            track_text += f"{date_short}"
+            if time_str:
+                track_text += f" · {time_str}"
+            track_text += f" · {city}\n"
+
     concert_callback = generate_short_callback('concerts_show', 0, artist_name, '')
     keyboard.row(
         InlineKeyboardButton(
-            "Концерты в Яндекс Музыке",
-            callback_data=concert_callback  # ← "concerts_show_123" — короткий!
+            f"🎫 Все концерты ({concert_info['count']})" if concert_info['has_concerts'] else "🎫 Концерты",
+            callback_data=concert_callback
         )
     )
     
     # ===== СОХРАНЯЕМ В КЭШ =====
     user_track_cache[track_id] = track_info
-    
-    # ===== ОТПРАВЛЯЕМ =====
+
+    # ===== ПОЛУЧАЕМ ОБЛОЖКУ =====
     cover_data = get_cover_data(track_info)
 
     if not cover_data:
         logger.error(f"❌ Обложка не найдена для: {track_info['artists']} — {track_info['title']}")
-        # Последняя попытка — сгенерировать хоть что-то
         cover_data = generate_fallback_cover(artist_name, track_title)
         if not cover_data:
             cover_data = _get_minimal_cover_png()
+
+    # ===== 🎨 БАННЕР С КОНЦЕРТОМ =====
+    if concert_info.get('has_concerts') and concert_info.get('concerts') and cover_data:
+        nearest_concert = concert_info['concerts'][0]
+        banner_data = make_track_banner_with_concert(cover_data, nearest_concert, artist_name)
+        if banner_data:
+            cover_data = banner_data
+            logger.info(f"🎨 Баннер с концертом для {artist_name}")
+    
     
     # ===== ОТПРАВЛЯЕМ С НЕСКОЛЬКИМИ ПОПЫТКАМИ =====
     message_sent = False
