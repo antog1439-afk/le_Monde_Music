@@ -3829,7 +3829,49 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     ai_fact = generate_ai_fact(track_info['main_artist'], track_info['title'])
     song_meaning = get_song_meaning(track_info['title'], track_info['main_artist'])
     
-    artist_name = track_info['main_artist']
+    # ===== СОБИРАЕМ ВСЕХ ИСПОЛНИТЕЛЕЙ ТРЕКА =====
+    all_artists = []
+    main_artist = track_info.get('main_artist') or track_info.get('artists', '')
+    if main_artist:
+        all_artists.append(main_artist)
+    
+    artists_field = track_info.get('artists', '')
+    if artists_field and artists_field != main_artist:
+        parts = re.split(r'[,&]|\s+feat\.?\s+|\s+ft\.?\s+|\s+x\s+', artists_field, flags=re.IGNORECASE)
+        for part in parts:
+            part = part.strip()
+            if part and part not in all_artists:
+                all_artists.append(part)
+    
+    artist_name = main_artist
+    
+    # ===== ИЩЕМ БЛИЖАЙШИЙ КОНЦЕРТ У ВСЕХ ИСПОЛНИТЕЛЕЙ =====
+    nearest_concert = None
+    nearest_artist = None
+    nearest_concert_info = None
+    
+    for artist in all_artists:
+        try:
+            concert_info = check_concerts_yandex_music(artist)
+            if concert_info.get('has_concerts') and concert_info.get('concerts'):
+                concert = concert_info['concerts'][0]
+                if nearest_concert is None:
+                    nearest_concert = concert
+                    nearest_artist = artist
+                    nearest_concert_info = concert_info
+                else:
+                    try:
+                        d1 = datetime.strptime(nearest_concert.get('date', '9999-12-31')[:10], '%Y-%m-%d')
+                        d2 = datetime.strptime(concert.get('date', '9999-12-31')[:10], '%Y-%m-%d')
+                        if d2 < d1:
+                            nearest_concert = concert
+                            nearest_artist = artist
+                            nearest_concert_info = concert_info
+                    except:
+                        pass
+        except Exception as e:
+            logger.debug(f"Ошибка проверки концертов для {artist}: {e}")
+            continue
     
     # ===== ПРОВЕРЯЕМ ПРЕДСТОЯЩИЙ РЕЛИЗ =====
     upcoming_release = get_upcoming_release(artist_name)
@@ -3964,46 +4006,61 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     
     
     # ===== РЯД 4: Концерты в Яндекс Музыке =====
-    concert_info = check_concerts_yandex_music(artist_name)
+    concert_info = nearest_concert_info
 
-    if concert_info['has_concerts']:
-        concerts = concert_info.get('concerts', [])
-        if concerts:
-            nearest = concerts[0]  # ближайший
-            city = nearest.get('city') or '—'
-            date = nearest.get('date', '')
-            time_str = nearest.get('time', '')
-            date_short = format_concert_date_short(date) if date else ''
+    if nearest_concert:
+        nearest = nearest_concert
+        city = nearest.get('city') or '—'
+        venue = nearest.get('venue') or ''
+        date = nearest.get('date', '')
+        time_str = nearest.get('time', '')
+        price = nearest.get('price', '')
+        age = nearest.get('age', '')
+        date_short = format_concert_date_short(date) if date else ''
 
-            # ===== ССЫЛКА НА БИЛЕТ =====
-            concert_id = nearest.get('id')
-            ticket_url = nearest.get('ticket_url')
+        concert_id = nearest.get('id')
+        ticket_url = nearest.get('ticket_url')
 
-            # Приоритет: ticket_url (afishaUrl) → ссылка по ID
-            if not ticket_url and concert_id:
-                ticket_url = f"https://music.yandex.ru/concert/{concert_id}"
+        if not ticket_url and concert_id:
+            ticket_url = f"https://music.yandex.ru/concert/{concert_id}"
 
-            # Показываем в тексте
-            track_text += f"\n\n🎫 <b>Ближайший концерт:</b>\n"
-            if ticket_url:
-                # Делаем всю строку ссылкой
-                track_text += f'<a href="{ticket_url}">{date_short}'
-                if time_str:
-                    track_text += f' · {time_str}'
-                track_text += f' · {city}</a>\n'
+        track_text += f"\n\n🎫 <b>Ближайший концерт:</b>\n"
+        track_text += f"🎤 <b>{nearest_artist}</b>\n"
+        track_text += f"🏙 <b>{city}</b>\n"
+
+        if date_short:
+            track_text += f"📅 {date_short}"
+            if time_str:
+                track_text += f" · {time_str}"
+            track_text += "\n"
+
+        if venue:
+            track_text += f"📍 {venue}\n"
+        if age:
+            track_text += f"🔞 {age}\n"
+        if price:
+            price_clean = re.sub(r'[^\d]', '', str(price)).strip()
+            if price_clean:
+                track_text += f"💵 от {price_clean} ₽\n"
             else:
-                track_text += f"{date_short}"
-                if time_str:
-                    track_text += f" · {time_str}"
-                track_text += f" · {city}\n"
+                track_text += f"💵 {price}\n"
+        if ticket_url:
+            track_text += f"🔗 {ticket_url}\n"
 
-    concert_callback = generate_short_callback('concerts_show', 0, artist_name, '')
-    keyboard.row(
-        InlineKeyboardButton(
-            f"🎫 Все концерты ({concert_info['count']})" if concert_info['has_concerts'] else "🎫 Концерты",
-            callback_data=concert_callback
+    # Кнопка «Все концерты»
+    if nearest_artist and nearest_concert_info:
+        concert_callback = generate_short_callback('concerts_show', 0, nearest_artist, '')
+        keyboard.row(
+            InlineKeyboardButton(
+                f"🎫 Все концерты {nearest_artist} ({nearest_concert_info['count']})",
+                callback_data=concert_callback
+            )
         )
-    )
+    else:
+        concert_callback = generate_short_callback('concerts_show', 0, main_artist, '')
+        keyboard.row(
+            InlineKeyboardButton("🎫 Концерты", callback_data=concert_callback)
+        )
     
     # ===== СОХРАНЯЕМ В КЭШ =====
     user_track_cache[track_id] = track_info
@@ -4018,12 +4075,11 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
             cover_data = _get_minimal_cover_png()
 
     # ===== 🎨 БАННЕР С КОНЦЕРТОМ =====
-    if concert_info.get('has_concerts') and concert_info.get('concerts') and cover_data:
-        nearest_concert = concert_info['concerts'][0]
-        banner_data = make_track_banner_with_concert(cover_data, nearest_concert, artist_name)
+    if nearest_concert and cover_data:
+        banner_data = make_track_banner_with_concert(cover_data, nearest_concert, nearest_artist)
         if banner_data:
             cover_data = banner_data
-            logger.info(f"🎨 Баннер с концертом для {artist_name}")
+            logger.info(f"🎨 Баннер с концертом для {nearest_artist}")
     
     
     # ===== ОТПРАВЛЯЕМ С НЕСКОЛЬКИМИ ПОПЫТКАМИ =====
