@@ -2244,81 +2244,41 @@ def get_all_album_tracks(album_id: int) -> List[Dict[str, Any]]:
 
 def get_artists_from_yandex_music(artist: str, title: str) -> List[str]:
     """
-    Достаёт ПОЛНЫЙ список исполнителей трека из Яндекс.Музыки.
+    Достаёт ПОЛНЫЙ список исполнителей трека из Яндекс.Музыки
+    через официальный API (yandex_music.Client).
     Возвращает список имён (без дублей).
     """
     if not artist or not title:
         return []
     
     try:
-        query = f"{artist} {title}"
-        encoded = urllib.parse.quote(query)
-        url = f"https://music.yandex.ru/search?text={encoded}&type=all"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-        }
-        
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200:
+        client = get_ym_client()
+        if not client:
+            logger.debug("Яндекс клиент недоступен, пропускаем")
             return []
         
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        track_link = soup.find('a', href=re.compile(r'/track/\d+'))
-        if not track_link:
+        # Ищем трек
+        search = client.search(f"{artist} {title}")
+        if not search or not search.tracks or not search.tracks.results:
+            logger.debug(f"Яндекс API не нашёл трек: {artist} {title}")
             return []
         
-        parent = track_link.find_parent(['div', 'li'])
-        if not parent:
-            return []
+        # Берём первый трек
+        track = search.tracks.results[0]
         
+        # Собираем всех артистов
         artists = []
-        for a in parent.find_all('a', href=re.compile(r'/artist/\d+')):
-            name = a.get_text(strip=True)
-            if name and name not in artists:
-                artists.append(name)
+        if track.artists:
+            for a in track.artists:
+                if a.name and a.name not in artists:
+                    artists.append(a.name)
         
-        if len(artists) < 2:
-            try:
-                track_url = 'https://music.yandex.ru' + track_link.get('href', '')
-                track_resp = requests.get(track_url, headers=headers, timeout=15)
-                if track_resp.status_code == 200:
-                    track_soup = BeautifulSoup(track_resp.text, 'html.parser')
-                    scripts = track_soup.find_all('script', type='application/ld+json')
-                    for script in scripts:
-                        try:
-                            data = json.loads(script.string)
-                            items = data if isinstance(data, list) else [data]
-                            for item in items:
-                                if not isinstance(item, dict):
-                                    continue
-                                by_artist = item.get('byArtist')
-                                if by_artist:
-                                    if isinstance(by_artist, list):
-                                        for ba in by_artist:
-                                            n = ba.get('name') if isinstance(ba, dict) else None
-                                            if n and n not in artists:
-                                                artists.append(n)
-                                    elif isinstance(by_artist, dict):
-                                        n = by_artist.get('name')
-                                        if n and n not in artists:
-                                            artists.append(n)
-                        except:
-                            continue
-            except:
-                pass
-        
-        logger.info(f"🎤 Яндекс дал артистов: {artists}")
+        logger.info(f"🎤 Яндекс API дал артистов: {artists}")
         return artists
         
     except Exception as e:
-        logger.debug(f"Ошибка получения артистов из Яндекса: {e}")
+        logger.debug(f"Ошибка получения артистов из Яндекс API: {e}")
         return []
-
-
 
 
 # === ПАРСИНГ ДАННЫХ ТРЕКА ===
