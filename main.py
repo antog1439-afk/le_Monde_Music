@@ -806,18 +806,25 @@ def search_yandex_music_track(artist: str, title: str) -> Optional[Dict[str, Any
 # ====================================================
 # === ОБНОВЛЁННАЯ ФУНКЦИЯ СКАЧИВАНИЯ ПОЛНОГО ТРЕКА ===
 # ====================================================
-
 def download_full_track_from_youtube(query: str, expected_duration: int = 0, artist: str = "", title: str = "") -> Optional[bytes]:
+    """
+    Качает ТОЛЬКО ОРИГИНАЛЬНЫЙ трек.
+    Строгие фильтры:
+    • Только официальные каналы (Topic, VEVO, лейблы)
+    • Точное совпадение названия
+    • Длительность ±3 сек
+    • Отсев live, remix, cover и т.п.
+    """
     if not YT_DLP_AVAILABLE:
         return None
-    
+
     cache_key = f"{query.lower()}_{expected_duration}_{artist.lower()}_{title.lower()}"
-    
+
     if cache_key in audio_cache:
         if time.time() - audio_cache_time.get(cache_key, 0) < 3600:
             logger.info(f"✅ Из кэша: {title}")
             return audio_cache[cache_key]
-    
+
     try:
         ydl_base_opts = {
             'format': 'bestaudio/best',
@@ -835,111 +842,134 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
                 'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
             }
         }
-        
+
         client_configs = [
             {'player_client': ['ios']},
             {'player_client': ['android']},
             {'player_client': ['web']},
         ]
-        
+
+        # ===== ЗАПРОСЫ: СНАЧАЛА САМЫЕ ТОЧНЫЕ =====
         search_queries = [
-            f"ytsearch10:{artist} {title} official audio",
-            f"ytsearch10:{artist} {title}",
-            f"ytsearch10:{artist} - {title}",
+            f"ytsearch15:{artist} {title} Topic",
+            f"ytsearch15:{artist} - {title} Topic",
+            f"ytsearch15:{artist} {title} official audio",
+            f"ytsearch15:{artist} {title}",
         ]
-        
-        # Нормализация
+
+        # ===== НОРМАЛИЗАЦИЯ =====
         artist_lower = artist.lower().strip() if artist else ""
         title_lower = title.lower().strip() if title else ""
         artist_words = set(w for w in artist_lower.split() if len(w) > 2)
         title_words = set(w for w in title_lower.split() if len(w) > 2)
-        
-        # Плохие слова
-        bad_words = ['remix', 'cover', 'кавер', 'live', 'концерт', 'ремикс',
-                     'parody', 'пародия', 'instrumental', 'минус', 'минусовка',
-                     'slowed', 'reverb', 'speed up', 'nightcore', 'mashup',
-                     'премьера', 'premiere', 'teaser', 'тизер']
-        
+
+        # ===== РАСШИРЕННЫЙ СПИСОК ПЛОХИХ СЛОВ =====
+        bad_words = [
+            'remix', 'ремикс', 'cover', 'кавер', 'live', 'концерт',
+            'parody', 'пародия', 'instrumental', 'минус', 'минусовка',
+            'slowed', 'reverb', 'speed up', 'nightcore', 'mashup',
+            'премьера', 'premiere', 'teaser', 'тизер',
+            'sped up', '8d', 'bass boosted', 'bootleg',
+            'acoustic', 'акустика', 'unplugged',
+            'reaction', 'реакция', 'tutorial', 'разбор',
+            'karaoke', 'караоке', 'backing track',
+            'full album', 'album mix', 'mixtape',
+        ]
+
         for client in client_configs:
             for search_query in search_queries:
                 try:
                     opts = ydl_base_opts.copy()
                     opts['extractor_args'] = {'youtube': client}
-                    
+
                     with yt_dlp.YoutubeDL(opts) as ydl:
                         logger.info(f"🔍 Поиск: {search_query}")
                         info = ydl.extract_info(search_query, download=False)
-                        
+
                         if not info or not info.get('entries'):
                             continue
-                        
+
                         logger.info(f"📊 Найдено {len(info['entries'])} видео")
-                        
-                        # Собираем кандидатов с приоритетом
+
                         candidates = []
-                        
+
                         for video in info['entries']:
                             if not video:
                                 continue
-                            
+
                             video_url = video.get('webpage_url')
                             duration = video.get('duration', 0)
                             video_title = (video.get('title') or '').lower()
                             channel = (video.get('uploader') or video.get('channel') or '').lower()
-                            
+                            channel_original = video.get('uploader') or video.get('channel') or ''
+
                             if not video_url or not duration:
                                 continue
-                            
-                            # ===== ФИЛЬТР 1: ДЛИТЕЛЬНОСТЬ =====
+
+                            # ===== ФИЛЬТР 1: ДЛИТЕЛЬНОСТЬ (±3 сек) =====
                             if expected_duration > 0:
                                 diff = abs(duration - expected_duration)
-                                if diff > 10:
+                                if diff > 3:
                                     logger.debug(f"⏱ Пропуск (длит. {duration}с vs {expected_duration}с): {video.get('title')}")
                                     continue
-                            
+
                             # ===== ФИЛЬТР 2: ПЛОХИЕ СЛОВА =====
                             if any(bw in video_title for bw in bad_words):
                                 logger.debug(f"🚫 Пропуск (плохое слово): {video.get('title')}")
                                 continue
-                            
-                            # ===== ФИЛЬТР 3: НАЗВАНИЕ ТРЕКА (ОБЯЗАТЕЛЬНО) =====
+
+                            # ===== ФИЛЬТР 3: НАЗВАНИЕ ТРЕКА =====
                             if title_words:
                                 if len(title_words) <= 2:
-                                    # Для коротких названий (1-2 слова) — точное вхождение
                                     if title_lower not in video_title:
                                         logger.debug(f"🚫 Пропуск (нет точного названия '{title_lower}'): {video.get('title')}")
                                         continue
                                 else:
-                                    # Для длинных — хотя бы одно слово
-                                    if not any(w in video_title for w in title_words):
-                                        logger.debug(f"🚫 Пропуск (нет названия трека): {video.get('title')}")
+                                    matched = sum(1 for w in title_words if w in video_title)
+                                    if matched < len(title_words) * 0.7:
+                                        logger.debug(f"🚫 Пропуск (не все слова названия): {video.get('title')}")
                                         continue
-                            
+
                             # ===== ФИЛЬТР 4: ИСПОЛНИТЕЛЬ =====
                             artist_in_channel = any(w in channel for w in artist_words) if artist_words else False
                             artist_in_title = any(w in video_title for w in artist_words) if artist_words else False
-                            
+
                             if artist_words and not (artist_in_channel or artist_in_title):
                                 logger.debug(f"🚫 Пропуск (нет исполнителя): {video.get('title')} | канал: {channel}")
                                 continue
-                            
-                            # ===== ПРИОРИТЕТ (Topic > VEVO > Official) =====
+
+                            # ===== ПРИОРИТЕТ КАНАЛА =====
                             priority = 0
-                            if 'topic' in channel: priority = 4
-                            elif 'vevo' in channel: priority = 3
-                            elif 'official' in channel: priority = 2
-                            elif 'records' in channel: priority = 1
-                            
-                            candidates.append((priority, video_url, video.get('title'), duration))
-                            logger.info(f"✅ Кандидат (priority={priority}): {video.get('title')} | {duration}с")
-                        
-                        # Сортируем по приоритету
+                            channel_lower = channel.lower()
+                            if ' - topic' in channel_lower or channel_lower.endswith('topic'):
+                                priority = 10          # официальный Topic (лучшее)
+                            elif 'vevo' in channel_lower:
+                                priority = 9
+                            elif 'official' in channel_lower:
+                                priority = 8
+                            elif 'records' in channel_lower or 'music' in channel_lower:
+                                priority = 6
+                            elif artist_words and any(w in channel_lower for w in artist_words):
+                                priority = 5           # канал самого артиста
+
+                            # Штраф, если в названии есть «topic»/«official» — значит это уже не оригинал
+                            if 'topic' in video_title or 'official audio' not in video_title:
+                                priority -= 1
+
+                            candidates.append((priority, video_url, video.get('title'), duration, channel_original))
+                            logger.info(f"✅ Кандидат (priority={priority}): {video.get('title')} | канал: {channel_original}")
+
+                        # ===== СОРТИРУЕМ ПО ПРИОРИТЕТУ =====
                         candidates.sort(key=lambda x: x[0], reverse=True)
-                        
-                        # Скачиваем первого подходящего
-                        for priority, video_url, video_title_full, duration in candidates:
+
+                        # ===== КАЧАЕМ ТОЛЬКО ЕСЛИ ЕСТЬ ХОРОШИЙ КАНДИДАТ =====
+                        for priority, video_url, video_title_full, duration, channel_original in candidates:
+                            if priority < 5:
+                                logger.warning(f"⚠️ Пропуск кандидата с низким приоритетом ({priority}): {video_title_full}")
+                                continue
+
                             try:
-                                logger.info(f"⬇️ Скачиваем: {video_title_full}")
+                                logger.info(f"⬇️ Скачиваем: {video_title_full} | канал: {channel_original} | priority={priority}")
                                 with yt_dlp.YoutubeDL(opts) as ydl_download:
                                     ydl_download.extract_info(video_url, download=True)
                                     for ext in ['.m4a', '.webm', '.mp4', '.opus']:
@@ -955,15 +985,18 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
                             except Exception as e:
                                 logger.warning(f"⚠️ Ошибка скачивания {video_title_full}: {e}")
                                 continue
-                
+
                 except Exception as e:
                     logger.debug(f"Не сработало: {client} + {search_query}: {e}")
                     continue
-        
+
+        logger.warning(f"❌ Оригинал не найден: {artist} — {title}")
         return None
+
     except Exception as e:
         logger.error(f"Ошибка скачивания аудио: {e}")
         return None
+
     
 # === НОВАЯ ФУНКЦИЯ: ПОИСК В YOUTUBE MUSIC ===
 def search_youtube_music(query: str, limit: int = 10) -> List[Dict[str, Any]]:
