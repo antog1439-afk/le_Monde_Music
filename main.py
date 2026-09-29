@@ -2249,6 +2249,30 @@ def parse_track_data(track: Dict) -> Dict[str, Any]:
     track_id = track['id']
     duration = track.get('duration', 0)
     
+    # ===== СОБИРАЕМ ВСЕХ ИСПОЛНИТЕЛЕЙ ИЗ ВСЕХ ПОЛЕЙ =====
+    contributors = []
+    
+    # 1. Основной исполнитель
+    if artist_name:
+        contributors.append(artist_name)
+    
+    # 2. Дополнительные исполнители Deezer (если есть)
+    for c in track.get('contributors', []):
+        c_name = c.get('name') if isinstance(c, dict) else None
+        if c_name and c_name not in contributors:
+            contributors.append(c_name)
+    
+    # 3. Фиты из названия трека (feat., ft., &, x, с)
+    feat_match = re.findall(r'(?:feat\.?|ft\.?|&|,|\sx\s|\sс\s)\s*([А-Яа-яA-Za-z0-9\s\-\.]+)', track_title, re.IGNORECASE)
+    for f in feat_match:
+        f_clean = f.strip()
+        f_clean = re.split(r'[\(\[]', f_clean)[0].strip()
+        if f_clean and len(f_clean) > 1 and f_clean not in contributors:
+            contributors.append(f_clean)
+    
+    all_artists_str = ', '.join(contributors)
+    main_artist = contributors[0] if contributors else artist_name
+    
     cover_url = None
     if track.get('album'):
         cover_url = (
@@ -2339,8 +2363,9 @@ def parse_track_data(track: Dict) -> Dict[str, Any]:
     
     track_data = {
         'title': track_title,
-        'artists': artist_name,
-        'main_artist': artist_name,
+        'artists': all_artists_str,
+        'main_artist': main_artist,
+        'all_artists': contributors,
         'album': album_title,
         'year': year,
         'release_date': release_date,
@@ -3830,18 +3855,26 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     song_meaning = get_song_meaning(track_info['title'], track_info['main_artist'])
     
     # ===== СОБИРАЕМ ВСЕХ ИСПОЛНИТЕЛЕЙ ТРЕКА =====
-    all_artists = []
-    main_artist = track_info.get('main_artist') or track_info.get('artists', '')
-    if main_artist:
-        all_artists.append(main_artist)
+        # ===== БЕРЁМ ВСЕХ ИСПОЛНИТЕЛЕЙ ИЗ TRACK_INFO =====
+    all_artists = track_info.get('all_artists', [])
     
-    artists_field = track_info.get('artists', '')
-    if artists_field and artists_field != main_artist:
-        parts = re.split(r'[,&]|\s+feat\.?\s+|\s+ft\.?\s+|\s+x\s+', artists_field, flags=re.IGNORECASE)
-        for part in parts:
-            part = part.strip()
-            if part and part not in all_artists:
-                all_artists.append(part)
+    if not all_artists:
+        main_artist_tmp = track_info.get('main_artist') or track_info.get('artists', '')
+        if main_artist_tmp:
+            all_artists.append(main_artist_tmp)
+        
+        artists_field = track_info.get('artists', '')
+        if artists_field and artists_field != main_artist_tmp:
+            parts = re.split(r'[,&]|\s+feat\.?\s+|\s+ft\.?\s+|\s+x\s+', artists_field, flags=re.IGNORECASE)
+            for part in parts:
+                part = part.strip()
+                if part and part not in all_artists:
+                    all_artists.append(part)
+    
+    main_artist = track_info.get('main_artist') or track_info.get('artists', '')
+    artist_name = main_artist
+    
+    logger.info(f"🎤 Исполнители трека: {all_artists}")
     
     artist_name = main_artist
     
