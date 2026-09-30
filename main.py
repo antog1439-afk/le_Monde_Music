@@ -2212,7 +2212,24 @@ def process_album_data(album: Dict[str, Any]) -> Dict[str, Any]:
     release_date = album.get('release_date', '')
     year = release_date.split('-')[0] if release_date else None
     track_count = album.get('nb_tracks', 0)
-    
+
+    # ✅ ДОБАВЛЯЕМ: если нет release_date — запрашиваем детали альбома
+    if not release_date:
+        try:
+            detail_url = f"https://api.deezer.com/album/{album_id}"
+            detail_response = requests.get(detail_url, timeout=10)
+            if detail_response.status_code == 200:
+                detail_data = detail_response.json()
+                release_date = (
+                    detail_data.get('release_date', '') or
+                    detail_data.get('original_release_date', '')
+                )
+                if release_date:
+                    year = release_date.split('-')[0]
+                    logger.info(f"✅ Дата альбома получена: {release_date}")
+        except Exception as e:
+            logger.debug(f"Не удалось получить дату альбома: {e}")
+
     tracks = []
     try:
         tracks_data = get_all_album_tracks(album_id)
@@ -2227,9 +2244,9 @@ def process_album_data(album: Dict[str, Any]) -> Dict[str, Any]:
             })
     except Exception as e:
         logger.warning(f"Ошибка получения треков альбома: {e}")
-    
+
     album_link = album.get('link', f"https://www.deezer.com/album/{album_id}")
-    
+
     return {
         'id': album_id,
         'title': album_title,
@@ -3848,6 +3865,12 @@ def send_album_detail(message: Message, album_id: int, artist_name: str):
                 play_callback = generate_short_callback('play', track_id, track_artist, title)
                 full_track_callback = f"ft_{track_id}"
                 
+                # ✅ СОХРАНЯЕМ ТРЕК В КЭШ для «Полный трек»
+                try:
+                    user_track_cache[track_id] = parse_track_data(track)
+                except Exception as e:
+                    logger.debug(f"Не удалось сохранить трек {track_id}: {e}")
+                
                 keyboard.row(
                     InlineKeyboardButton(f"🎧 30 сек", callback_data=play_callback),
                     InlineKeyboardButton(f"🎵 Полный — {short_title[:12]}", callback_data=full_track_callback)
@@ -3977,6 +4000,12 @@ def send_album_result(message: Message, album_info: Dict[str, Any]):
             if track_id:
                 play_callback = generate_short_callback('play', track_id, track_artist, title)
                 full_track_callback = f"full_track_{track_id}"
+                
+                # ✅ СОХРАНЯЕМ ТРЕК В КЭШ
+                try:
+                    user_track_cache[track_id] = parse_track_data(track)
+                except Exception as e:
+                    logger.debug(f"Не удалось сохранить трек {track_id}: {e}")
                 
                 keyboard.row(
                     InlineKeyboardButton(f"🎧 30 сек", callback_data=play_callback),
