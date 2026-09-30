@@ -2589,39 +2589,164 @@ def get_album_info(album_id: int) -> Optional[Dict[str, Any]]:
         logger.error(f"Ошибка получения информации об альбоме: {e}")
         return None
 
-# === ФУНКЦИЯ ПОЛУЧЕНИЯ ВСЕХ ТРЕКОВ ИСПОЛНИТЕЛЯ ===
+# === ФУНКЦИЯ ПОЛУЧЕНИЯ ВСЕХ ТРЕКОВ ИСПОЛНИТЕЛЯ (только его!) ===
 def get_all_artist_tracks(artist_name: str, limit: int = 200) -> Optional[List[Dict[str, Any]]]:
-    all_tracks = []
-    page = 0
-    per_page = 50
-    
+    """
+    Получает треки ТОЛЬКО этого исполнителя через /artist/{id}/top.
+    Возвращает список треков или None.
+    """
     try:
+        # ===== 1. Находим artist_id в Deezer =====
+        search_url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(artist_name)}&limit=1"
+        search_response = requests.get(search_url, timeout=15)
+
+        if search_response.status_code != 200:
+            logger.warning(f"⚠️ Deezer: не удалось найти артиста {artist_name}")
+            return _get_all_artist_tracks_yandex_fallback(artist_name, limit)
+
+        search_data = search_response.json()
+        if not search_data.get('data') or len(search_data['data']) == 0:
+            logger.warning(f"⚠️ Deezer не нашёл артиста: {artist_name}")
+            return _get_all_artist_tracks_yandex_fallback(artist_name, limit)
+
+        artist_info = search_data['data'][0]
+        artist_id = artist_info['id']
+        found_name = artist_info.get('name', '')
+        logger.info(f"✅ Deezer artist_id={artist_id} ({found_name})")
+
+        # ===== 2. Получаем ТОЛЬКО его топ-треки =====
+        all_tracks = []
+        page = 0
+        per_page = 50
+
         while len(all_tracks) < limit:
-            url = f"https://api.deezer.com/search?q={urllib.parse.quote(artist_name)}&limit={per_page}&index={page * per_page}&order=RANKING"
+            url = f"https://api.deezer.com/artist/{artist_id}/top?limit={per_page}&index={page * per_page}"
             response = requests.get(url, timeout=30)
-            
+
             if response.status_code != 200:
                 break
-            
+
             data = response.json()
-            
+
             if not data.get('data') or len(data['data']) == 0:
                 break
-            
+
             all_tracks.extend(data['data'])
-            
-            if data.get('total', 0) <= len(all_tracks):
+
+            if len(data['data']) < per_page:
                 break
-            
+
             page += 1
-            
+
             if page > 10:
                 break
-        
-        return all_tracks[:limit]
-        
+
+        # ===== 3. Убираем дубликаты по ID =====
+        seen = set()
+        unique = []
+        for t in all_tracks:
+            tid = t.get('id')
+            if tid and tid not in seen:
+                seen.add(tid)
+                unique.append(t)
+
+        logger.info(f"✅ Найдено {len(unique)} треков у {found_name}")
+        return unique[:limit]
+
     except Exception as e:
-        logger.error(f"Ошибка получения всех треков: {e}")
+        logger.error(f"Ошибка получения треков: {e}")
+        return _get_all_artist_tracks_yandex_fallback(artist_name, limit)
+
+
+def _get_all_artist_tracks_yandex_fallback(artist_name: str, limit: int = 200) -> Optional[List[Dict[str, Any]]]:
+    """
+    Fallback: получает треки артиста через Яндекс Музыку.
+    Используется если Deezer не нашёл артиста.
+    """
+    try:
+        client = get_ym_client()
+        if not client:
+            logger.warning("⚠️ Яндекс клиент недоступен, fallback не сработал")
+            return None
+
+        # ===== 1. Ищем артиста в Яндексе =====
+        search = client.search(artist_name)
+        if not search or not search.artists or not search.artists.results:
+            logger.warning(f"❌ Яндекс не нашёл артиста: {artist_name}")
+            return None
+
+        # Берём первого артиста
+        artist = search.artists.results[0]
+        artist_id = artist.id
+        logger.info(f"✅ Яндекс artist_id={artist_id} ({artist.name})")
+
+        # ===== 2. Получаем треки артиста =====
+        # В yandex_music есть artists_brief_info и tracks
+        # Загружаем топ-треки через artists_tracks
+        try:
+            tracks_result = client.artists_tracks(artist_id, page=0, page_size=min(limit, 100))
+        except Exception as e:
+            logger.debug(f"artists_tracks не сработал: {e}")
+            tracks_result = None
+
+        if not tracks_result or not tracks_result.tracks:
+            logger.warning(f"⚠️ Яндекс не дал треки для {artist_name}")
+            return None
+
+        # ===== 3. Конвертируем в формат Deezer (для совместимости) =====
+        all_tracks = []
+        for t in tracks_result.tracks:
+            try:
+                # Собираем артистов
+                t_artists = []
+                if t.artists:
+                    t_artists = [a.name for a in t.artists if a.name]
+                artist_name_str = ', '.join(t_artists) if t_artists else artist.name
+
+                # Длительность в секундах
+                duration = t.duration_ms // 1000 if t.duration_ms else 0
+
+                # Обложка
+                cover_url = None
+                if t.cover_uri:
+                    cover_url = "https://" + t.cover_uri.replace("%%", "600x600")
+
+                # Альбом
+                album_title = 'Неизвестный альбом'
+                album_id = None
+                if t.albums:
+                    album_title = t.albums[0].title or 'Неизвестный альбом'
+                    album_id = t.albums[0].id
+
+                # Формируем в формате Deezer
+                deezer_like = {
+                    'id': 0,  # Яндекс ID нельзя использовать как Deezer
+                    'title': t.title or 'Без названия',
+                    'artist': {'name': artist_name_str},
+                    'album': {
+                        'id': album_id,
+                        'title': album_title,
+                        'cover_xl': cover_url,
+                        'cover_big': cover_url,
+                        'cover_medium': cover_url,
+                    },
+                    'duration': duration,
+                    'preview': None,
+                    'explicit_lyrics': bool(t.explicit),
+                    'rank': 0,
+                    'yandex_id': str(t.id),  # ← сохраняем оригинальный ID
+                    'source': 'yandex',
+                }
+                all_tracks.append(deezer_like)
+            except Exception as e:
+                logger.debug(f"Ошибка конвертации трека: {e}")
+                continue
+
+        logger.info(f"✅ Яндекс дал {len(all_tracks)} треков для {artist_name}")
+        return all_tracks[:limit]
+
+    except Exception as e:
+        logger.error(f"Ошибка Яндекс fallback: {e}")
         return None
 
 # === ФУНКЦИЯ ПОЛУЧЕНИЯ БИОГРАФИИ ИЗ ЯНДЕКС МУЗЫКИ ===
