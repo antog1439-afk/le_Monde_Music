@@ -827,7 +827,7 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
 
     try:
         ydl_base_opts = {
-            'format': 'bestaudio/best',
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
@@ -837,12 +837,14 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
             'socket_timeout': 30,
             'geo_bypass': True,
             'geo_bypass_country': 'RU',
+            'noplaylist': True,
+            'extractor_retries': 3,
+            'file_access_retries': 3,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
             }
         }
-
         client_configs = [
             {'player_client': ['ios']},
             {'player_client': ['android']},
@@ -951,11 +953,10 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
                                 priority = 6
                             elif artist_words and any(w in channel_lower for w in artist_words):
                                 priority = 5           # канал самого артиста
+                            elif artist_words and (artist_in_title or artist_in_channel):
+                                priority = 4           # исполнитель упомянут — уже норм
 
-                            # Штраф, если в названии есть «topic»/«official» — значит это уже не оригинал
-                            if 'topic' in video_title or 'official audio' not in video_title:
-                                priority -= 1
-
+                            # ⚠️ Больше НЕ штрафуем за 'topic' в названии
                             candidates.append((priority, video_url, video.get('title'), duration, channel_original))
                             logger.info(f"✅ Кандидат (priority={priority}): {video.get('title')} | канал: {channel_original}")
 
@@ -964,7 +965,7 @@ def download_full_track_from_youtube(query: str, expected_duration: int = 0, art
 
                         # ===== КАЧАЕМ ТОЛЬКО ЕСЛИ ЕСТЬ ХОРОШИЙ КАНДИДАТ =====
                         for priority, video_url, video_title_full, duration, channel_original in candidates:
-                            if priority < 5:
+                            if priority < 3:
                                 logger.warning(f"⚠️ Пропуск кандидата с низким приоритетом ({priority}): {video_title_full}")
                                 continue
 
@@ -2977,10 +2978,86 @@ def get_ym_client():
         try:
             _ym_client = Client(YANDEX_MUSIC_TOKEN).init()
             logger.info("✅ Клиент Яндекс Музыки готов")
+            
+            # ===== ДИАГНОСТИКА =====
+            try:
+                status = _ym_client.account_status()
+                logger.info(f"📊 Статус аккаунта: {status}")
+                if hasattr(status, 'plus') and status.plus:
+                    logger.info(f"💎 Plus: {status.plus}")
+                if hasattr(status, 'subscription') and status.subscription:
+                    logger.info(f"📅 Подписка: {status.subscription}")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось получить статус: {e}")
+            # ===== КОНЕЦ ДИАГНОСТИКИ =====
+            
         except Exception as e:
             logger.error(f"❌ Ошибка клиента: {e}")
             return None
     return _ym_client
+
+
+def download_track_from_yandex(artist: str, title: str, track_id: int = 0) -> Optional[bytes]:
+    """
+    Скачивает трек НАПРЯМУЮ с Яндекс Музыки в максимальном качестве.
+    Возвращает байты аудио или None.
+    """
+    try:
+        client = get_ym_client()
+        if not client:
+            logger.error("❌ Яндекс клиент недоступен")
+            return None
+        
+        # ===== 1. ИЩЕМ ТРЕК =====
+        track = None
+        
+        # Если есть track_id — пробуем загрузить по нему
+        if track_id and track_id > 0:
+            try:
+                tracks = client.tracks([str(track_id)])
+                if tracks:
+                    track = tracks[0]
+                    logger.info(f"✅ Трек найден по ID: {track.title}")
+            except Exception as e:
+                logger.debug(f"Не удалось загрузить по ID: {e}")
+        
+        # Если не нашли — ищем по названию
+        if not track:
+            search = client.search(f"{artist} {title}")
+            if not search or not search.tracks or not search.tracks.results:
+                logger.warning(f"❌ Яндекс не нашёл: {artist} — {title}")
+                return None
+            
+            # Берём первый трек
+            track = search.tracks.results[0]
+            logger.info(f"✅ Найден в Яндексе: {track.title} — {track.artists[0].name if track.artists else '—'}")
+        
+        # ===== 2. СКАЧИВАЕМ =====
+        logger.info(f"⬇️ Скачиваем с Яндекс Музыки: {track.title}")
+        
+        # download_bytes() возвращает байты аудио
+        # Пробуем разные битрейты по очереди
+        audio_data = None
+        for bitrate in [320, 192, 128, 64]:
+            try:
+                audio_data = track.download_bytes(bitrate=bitrate)
+                if audio_data:
+                    logger.info(f"✅ Скачано в {bitrate} kbps")
+                    break
+            except Exception as e:
+                logger.debug(f"Битрейт {bitrate} недоступен: {e}")
+                continue
+        
+        if audio_data:
+            logger.info(f"✅ Скачано: {len(audio_data) // 1024} KB")
+            return audio_data
+        else:
+            logger.warning("❌ Не удалось скачать аудио")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Ошибка скачивания с Яндекс Музыки: {e}")
+        return None
 
 
 def get_artist_cover_url_concerts(artist_id: int, size: str = "600x600") -> Optional[str]:
@@ -4914,20 +4991,20 @@ def handle_callback(call):
             return
         
         if call.data.startswith('full_track_'):
-            # Полная логика обработки полного трека
+            bot.answer_callback_query(call.id, "⏳ Ищу трек на YouTube...")
+
             try:
                 track_id = int(call.data.replace('full_track_', ''))
                 track_info = user_track_cache.get(track_id)
                 
                 if not track_info:
-                    bot.answer_callback_query(call.id, "❌ Трек не найден", show_alert=True)
+                    bot.send_message(call.message.chat.id, "❌ Трек не найден")
                     return
                 
                 if not YT_DLP_AVAILABLE:
-                    bot.answer_callback_query(call.id, "❌ Функция недоступна. Установите yt-dlp", show_alert=True)
+                    bot.send_message(call.message.chat.id, "❌ Функция недоступна. Установите yt-dlp")
                     return
                 
-                bot.answer_callback_query(call.id, "⏳ Ищу трек на YouTube...")
                 status_msg = bot.send_message(
                     call.message.chat.id,
                     f"🔍 Ищу полную версию трека:\n"
@@ -4935,23 +5012,29 @@ def handle_callback(call):
                     f"⏳ Это может занять 5-15 секунд..."
                 )
                 
-                # ✅ Уточняем запрос + передаём длительность
                 query = f"{track_info['main_artist']} {track_info['title']}"
                 expected_duration = track_info.get('duration', 0)
                 artist = track_info['main_artist']
                 title = track_info['title']
 
-                logger.info(f"🎵 Ищем полный трек: {artist} — {title} ({expected_duration}с)")
+                logger.info(f"🎵 Ищем полный трек: {artist} — {title}")
 
-                audio_data = download_full_track_from_youtube(query, expected_duration, artist, title)
+                # ✅ СНАЧАЛА ПРОБУЕМ ЯНДЕКС МУЗЫКУ
+                audio_data = download_track_from_yandex(artist, title)
+
+                # Если Яндекс не дал — fallback на YouTube
+                if not audio_data:
+                    logger.info("⚠️ Яндекс не дал трек, пробуем YouTube...")
+                    audio_data = download_full_track_from_youtube(query, expected_duration, artist, title)
+
+                # Удаляем статус-сообщение
                 try:
                     bot.delete_message(call.message.chat.id, status_msg.message_id)
                 except:
                     pass
-                
+
                 if audio_data:
                     cover_data = get_cover_data(track_info)
-                    
                     try:
                         if cover_data:
                             bot.send_audio(
@@ -4974,31 +5057,21 @@ def handle_callback(call):
                                 caption=f"🎵 <b>{track_info['artists']}</b> — {track_info['title']}",
                                 parse_mode='HTML'
                             )
-                        
-                        bot.answer_callback_query(call.id, "✅ Полный трек отправлен!")
                     except Exception as e:
                         logger.error(f"Ошибка отправки аудио: {e}")
-                        bot.send_message(
-                            call.message.chat.id,
-                            f"❌ Не удалось отправить аудио: {str(e)[:100]}"
-                        )
+                        bot.send_message(call.message.chat.id, f"❌ Не удалось отправить аудио: {str(e)[:100]}")
                 else:
                     bot.send_message(
                         call.message.chat.id,
-                        f"❌ Не удалось найти полную версию трека на YouTube\n\n"
+                        f"❌ Не удалось найти полный трек\n\n"
                         f"🎵 {track_info['artists']} — {track_info['title']}\n\n"
                         f"💡 Попробуйте использовать 30-секундное превью или ссылки на платформы"
                     )
-                    bot.answer_callback_query(call.id, "❌ Трек не найден на YouTube", show_alert=False)
-                    
+
             except Exception as e:
                 logger.error(f"Ошибка отправки полного трека: {e}")
-                bot.answer_callback_query(call.id, f"❌ Ошибка: {str(e)[:50]}", show_alert=True)
                 try:
-                    bot.send_message(
-                        call.message.chat.id,
-                        f"❌ Произошла ошибка при загрузке трека\n\n{str(e)[:200]}"
-                    )
+                    bot.send_message(call.message.chat.id, f"❌ Ошибка: {str(e)[:200]}")
                 except:
                     pass
             return
