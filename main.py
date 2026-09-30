@@ -3867,9 +3867,33 @@ def send_album_detail(message: Message, album_id: int, artist_name: str):
                 
                 # ✅ СОХРАНЯЕМ ТРЕК В КЭШ для «Полный трек»
                 try:
-                    user_track_cache[track_id] = parse_track_data(track)
+                    track_info_cached = parse_track_data(track)
+                    user_track_cache[track_id] = track_info_cached
+                    logger.info(f"💾 Сохранён в кэш: {track_id} — {title}")
                 except Exception as e:
-                    logger.debug(f"Не удалось сохранить трек {track_id}: {e}")
+                    logger.error(f"❌ Ошибка parse_track_data для {track_id}: {e}")
+                    # ✅ FALLBACK: сохраняем "сырой" минимум, чтобы кнопка работала
+                    try:
+                        user_track_cache[track_id] = {
+                            'title': title,
+                            'artists': track_artist,
+                            'main_artist': track_artist,
+                            'all_artists': [track_artist],
+                            'album': album_info.get('title', 'Неизвестный альбом') if 'album_info' in dir() else 'Неизвестный альбом',
+                            'year': None,
+                            'release_date': '',
+                            'formatted_date': None,
+                            'track_id': track_id,
+                            'duration': duration,
+                            'duration_str': f"{duration // 60}:{duration % 60:02d}",
+                            'cover_url': track.get('album', {}).get('cover_xl') if isinstance(track.get('album'), dict) else None,
+                            'links': {},
+                            'explicit': False,
+                            'source': 'deezer_album',
+                        }
+                        logger.warning(f"⚠️ Сохранён минимальный кэш для {track_id}")
+                    except Exception as e2:
+                        logger.error(f"❌ Даже fallback не сработал: {e2}")
                 
                 keyboard.row(
                     InlineKeyboardButton(f"🎧 30 сек", callback_data=play_callback),
@@ -4001,12 +4025,34 @@ def send_album_result(message: Message, album_info: Dict[str, Any]):
                 play_callback = generate_short_callback('play', track_id, track_artist, title)
                 full_track_callback = f"full_track_{track_id}"
                 
+                
                 # ✅ СОХРАНЯЕМ ТРЕК В КЭШ
                 try:
                     user_track_cache[track_id] = parse_track_data(track)
+                    logger.info(f"💾 Сохранён в кэш (result): {track_id} — {title}")
                 except Exception as e:
-                    logger.debug(f"Не удалось сохранить трек {track_id}: {e}")
-                
+                    logger.error(f"❌ Ошибка parse_track_data для {track_id}: {e}")
+                    # ✅ FALLBACK: минимальный кэш
+                    try:
+                        user_track_cache[track_id] = {
+                            'title': title,
+                            'artists': track_artist,
+                            'main_artist': track_artist,
+                            'all_artists': [track_artist],
+                            'album': album_info.get('title', 'Неизвестный альбом'),
+                            'year': None,
+                            'release_date': '',
+                            'formatted_date': None,
+                            'track_id': track_id,
+                            'duration': duration,
+                            'duration_str': f"{duration // 60}:{duration % 60:02d}",
+                            'cover_url': None,
+                            'links': {},
+                            'explicit': False,
+                            'source': 'deezer_album_result',
+                        }
+                    except Exception as e2:
+                        logger.error(f"❌ Fallback тоже упал: {e2}")
                 keyboard.row(
                     InlineKeyboardButton(f"🎧 30 сек", callback_data=play_callback),
                     InlineKeyboardButton(f"🎵 Полный — {title[:15]}", callback_data=full_track_callback)
@@ -5151,8 +5197,21 @@ def handle_callback(call):
                 track_id = int(call.data.replace('full_track_', ''))
                 track_info = user_track_cache.get(track_id)
                 
+                # ✅ FALLBACK: если нет в кэше — загружаем из Deezer
                 if not track_info:
-                    bot.send_message(call.message.chat.id, "❌ Трек не найден")
+                    logger.info(f"🔄 Трека {track_id} нет в кэше, загружаем из Deezer...")
+                    try:
+                        url = f"https://api.deezer.com/track/{track_id}"
+                        response = requests.get(url, timeout=15)
+                        if response.status_code == 200:
+                            track_data = response.json()
+                            track_info = parse_track_data(track_data)
+                            logger.info(f"✅ Загружен из Deezer: {track_info['title']}")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка загрузки из Deezer: {e}")
+                
+                if not track_info:
+                    bot.send_message(call.message.chat.id, f"❌ Трек {track_id} не найден")
                     return
                 
                 if not YT_DLP_AVAILABLE:
@@ -5173,14 +5232,10 @@ def handle_callback(call):
 
                 logger.info(f"🎵 Ищем полный трек: {artist} — {title}")
 
-                # ✅ СНАЧАЛА ПРОБУЕМ ЯНДЕКС МУЗЫКУ
-                audio_data = download_track_from_yandex(artist, title)
-
-                # Если Яндекс не дал — fallback на YouTube
-                if not audio_data:
-                    logger.info("⚠️ Яндекс не дал трек, пробуем YouTube...")
-                    audio_data = download_full_track_from_youtube(query, expected_duration, artist, title)
-
+                # ✅ ВСЕГДА КАЧАЕМ С YOUTUBE (как для обычных треков)
+                logger.info(f"🎵 Качаем с YouTube: {artist} — {title}")
+                audio_data = download_full_track_from_youtube(query, expected_duration, artist, title)
+                
                 # Удаляем статус-сообщение
                 try:
                     bot.delete_message(call.message.chat.id, status_msg.message_id)
