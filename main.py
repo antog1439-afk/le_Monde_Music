@@ -4321,6 +4321,7 @@ def send_album_result(message: Message, album_info: Dict[str, Any]):
         disable_web_page_preview=True
     )
 
+
 def send_all_tracks(message: Message, artist_name: str):
     bot.send_chat_action(message.chat.id, 'typing')
     
@@ -4336,6 +4337,30 @@ def send_all_tracks(message: Message, artist_name: str):
     
     all_tracks.sort(key=lambda x: x.get('rank', 0), reverse=True)
     
+    # ===== ИЩЕМ ФОТО АРТИСТА =====
+    artist_photo_url = None
+    try:
+        # Используем функцию поиска из Deezer
+        search_url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(artist_name)}&limit=1"
+        search_response = requests.get(search_url, timeout=10)
+        if search_response.status_code == 200:
+            search_data = search_response.json()
+            if search_data.get('data') and len(search_data['data']) > 0:
+                artist_id = search_data['data'][0]['id']
+                artist_url = f"https://api.deezer.com/artist/{artist_id}"
+                artist_response = requests.get(artist_url, timeout=10)
+                if artist_response.status_code == 200:
+                    artist_data = artist_response.json()
+                    artist_photo_url = (
+                        artist_data.get('picture_xl') or
+                        artist_data.get('picture_big') or
+                        artist_data.get('picture_medium')
+                    )
+                    logger.info(f"🖼 Фото артиста получено: {artist_photo_url[:60] if artist_photo_url else 'нет'}...")
+    except Exception as e:
+        logger.debug(f"Не удалось получить фото артиста: {e}")
+    
+    # ===== ФОРМИРУЕМ ТЕКСТ =====
     text = f"🎵 <b>ВСЕ ТРЕКИ: {artist_name}</b>\n\n"
     text += f"📊 <b>Всего найдено:</b> {len(all_tracks)} треков\n\n"
     
@@ -4378,6 +4403,25 @@ def send_all_tracks(message: Message, artist_name: str):
         )
     )
     
+    # ===== ОТПРАВЛЯЕМ С ФОТО ИЛИ БЕЗ =====
+    if artist_photo_url:
+        try:
+            # Скачиваем фото и отправляем с caption
+            photo_response = requests.get(artist_photo_url, timeout=10)
+            if photo_response.status_code == 200:
+                bot.send_photo(
+                    message.chat.id,
+                    photo=photo_response.content,
+                    caption=text,
+                    parse_mode='HTML',
+                    reply_markup=keyboard
+                )
+                logger.info(f"✅ Все треки {artist_name} отправлены с фото")
+                return
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось отправить фото: {e}")
+    
+    # Если фото нет — отправляем просто текст
     bot.send_message(
         message.chat.id,
         text,
@@ -4385,6 +4429,10 @@ def send_all_tracks(message: Message, artist_name: str):
         reply_markup=keyboard,
         disable_web_page_preview=True
     )
+    logger.info(f"✅ Все треки {artist_name} отправлены без фото")
+
+
+
 
 # === ОБНОВЛЁННАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ТРЕКА ===
 def send_track_result(message: Message, track_info: Dict[str, Any]):
