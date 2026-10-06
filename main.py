@@ -4337,28 +4337,26 @@ def send_all_tracks(message: Message, artist_name: str):
     
     all_tracks.sort(key=lambda x: x.get('rank', 0), reverse=True)
     
-    # ===== ИЩЕМ ФОТО АРТИСТА =====
+    
+    # ===== ИЩЕМ ФОТО АРТИСТА В ЯНДЕКС.МУЗЫКЕ =====
     artist_photo_url = None
     try:
-        # Используем функцию поиска из Deezer
-        search_url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(artist_name)}&limit=1"
-        search_response = requests.get(search_url, timeout=10)
-        if search_response.status_code == 200:
-            search_data = search_response.json()
-            if search_data.get('data') and len(search_data['data']) > 0:
-                artist_id = search_data['data'][0]['id']
-                artist_url = f"https://api.deezer.com/artist/{artist_id}"
-                artist_response = requests.get(artist_url, timeout=10)
-                if artist_response.status_code == 200:
-                    artist_data = artist_response.json()
-                    artist_photo_url = (
-                        artist_data.get('picture_xl') or
-                        artist_data.get('picture_big') or
-                        artist_data.get('picture_medium')
-                    )
-                    logger.info(f"🖼 Фото артиста получено: {artist_photo_url[:60] if artist_photo_url else 'нет'}...")
+        client = get_ym_client()
+        if client:
+            # 1. Ищем артиста в Яндексе
+            search = client.search(artist_name)
+            if search and search.artists and search.artists.results:
+                # 2. Берём первого артиста (самый релевантный)
+                artist = search.artists.results[0]
+                artist_id = artist.id
+                
+                # 3. Получаем фото через функцию
+                artist_photo_url = get_artist_cover_url_concerts(artist_id, "600x600")
+                logger.info(f"🖼 Фото артиста из Яндекса: {artist.name} (ID: {artist_id})")
+            else:
+                logger.warning(f"⚠️ Яндекс не нашёл артиста: {artist_name}")
     except Exception as e:
-        logger.debug(f"Не удалось получить фото артиста: {e}")
+        logger.debug(f"Не удалось получить фото из Яндекса: {e}")
     
     # ===== ФОРМИРУЕМ ТЕКСТ =====
     text = f"🎵 <b>ВСЕ ТРЕКИ: {artist_name}</b>\n\n"
