@@ -37,6 +37,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ===== AI ГЕНЕРАЦИЯ ФАКТОВ (Groq / DeepSeek) =====
+from openai import OpenAI
+
+GROQ_API_KEY = None
+try:
+    if os.path.exists('groq_key.txt'):
+        with open('groq_key.txt', 'r') as f:
+            GROQ_API_KEY = f.read().strip()
+        logger.info("✅ Groq ключ загружен")
+    else:
+        logger.warning("⚠️ groq_key.txt не найден — факты будут из базы")
+except Exception as e:
+    logger.error(f"❌ Ошибка загрузки Groq ключа: {e}")
+
+_ai_client = None
+
+def get_ai_client():
+    """Возвращает клиент Groq (OpenAI-совместимый)"""
+    global _ai_client
+    if _ai_client is None and GROQ_API_KEY:
+        try:
+            _ai_client = OpenAI(
+                api_key=GROQ_API_KEY,
+                base_url="https://api.groq.com/openai/v1"  # Groq endpoint
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания AI клиента: {e}")
+    return _ai_client
+# ===== КОНЕЦ БЛОКА =====
+
+
+
+
 # === ТОКЕНЫ ===
 TELEGRAM_TOKEN = '8586892813:AAEgkMDSC2efFQYx9J2TD8SllVK5HUf6LWo'
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -60,6 +93,8 @@ callback_counter = 0
 youtube_cache = {}
 audio_cache = {}
 audio_cache_time = {}
+upcoming_cache = {}
+UPCOMING_CACHE_DURATION = 1800  # 30 минут
 
 # === ДЛЯ КОНЦЕРТОВ ===
 _artist_ids: Dict[str, int] = {}
@@ -3013,6 +3048,13 @@ def send_artist_bio(message: Message, artist_name: str):
         "📱 Открыть Mini App",
         web_app=WebAppInfo(url="https://antog1439-afk.github.io/Muzyka/")
     ))
+
+    # Предстоящий релиз
+    release_callback = generate_short_callback('release_show', 0, info['name'], '')
+    keyboard.add(InlineKeyboardButton(
+        "🎉 Предстоящий релиз",
+        callback_data=release_callback
+    ))
     
     # Концерты
     concert_info = check_concerts_yandex_music(artist_name)
@@ -3699,6 +3741,140 @@ def send_concerts(message: Message, artist_name: str):
 
     except Exception as e:
         logger.error(f"Ошибка отправки концертов: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+
+
+
+def send_upcoming_release(message: Message, artist_name: str):
+    """Показывает предстоящий релиз в стиле Яндекс Музыки"""
+    try:
+        bot.send_chat_action(message.chat.id, 'typing')
+        status_msg = bot.reply_to(
+            message,
+            f"🔍 Ищем предстоящий релиз: <b>{artist_name}</b>...",
+            parse_mode='HTML'
+        )
+        
+        release = get_upcoming_release_cached(artist_name)
+        
+        try:
+            bot.delete_message(message.chat.id, status_msg.message_id)
+        except:
+            pass
+        
+        # ===== НЕТ РЕЛИЗА =====
+        if not release or not release.get('has_upcoming'):
+            keyboard = InlineKeyboardMarkup(row_width=2)
+            keyboard.add(
+                InlineKeyboardButton(
+                    "🔔 Подписаться",
+                    callback_data=generate_short_callback('subscribe_release', 0, artist_name, '')
+                ),
+                InlineKeyboardButton(
+                    "🎤 Биография",
+                    callback_data=generate_short_callback('bio_from_release', 0, artist_name, '')
+                )
+            )
+            
+            bot.send_message(
+                message.chat.id,
+                f"😔 <b>У {artist_name} пока нет анонсированных релизов</b>\n\n"
+                f"💡 Возможные причины:\n"
+                f"• Релиз ещё не анонсирован\n"
+                f"• Информация появится позже\n\n"
+                f"🔔 Подпишись — сообщу, когда что-то выйдет!",
+                parse_mode='HTML',
+                reply_markup=keyboard
+            )
+            return
+        
+        # ===== ЕСТЬ РЕЛИЗ =====
+        days = release.get('days_left', 0)
+        
+        if days == 0:
+            date_text = "🔥 <b>СЕГОДНЯ!</b>"
+        elif days == 1:
+            date_text = "🔥 <b>ЗАВТРА!</b>"
+        elif days < 7:
+            date_text = f"⚡ <b>через {days} дн.</b>"
+        elif days < 30:
+            weeks = days // 7
+            date_text = f"📅 <b>через {weeks} нед.</b>"
+        else:
+            date_text = f"📅 <b>через {days // 30} мес.</b>"
+        
+        type_emoji = {'album': '💿', 'single': '🎵', 'ep': '📀'}
+        type_name = {'album': 'Альбом', 'single': 'Сингл', 'ep': 'EP'}
+        r_type = release.get('release_type', 'album')
+        
+        text = (
+            f"🎉 <b>ПРЕДСТОЯЩИЙ РЕЛИЗ</b>\n\n"
+            f"🎤 <b>{artist_name}</b>\n"
+            f"{type_emoji.get(r_type, '💿')} <b>{type_name.get(r_type, 'Релиз')}:</b> "
+            f"{release.get('release_title', 'Новый релиз')}\n"
+            f"{date_text}\n"
+        )
+        
+        if release.get('release_date'):
+            formatted = format_release_date(release['release_date'])
+            if formatted:
+                text += f"📆 <b>Дата выхода:</b> {formatted}\n"
+        
+        if release.get('source'):
+            src_name = 'Яндекс.Музыка' if release['source'] == 'yandex' else 'Deezer'
+            text += f"\n📡 Источник: {src_name}"
+        
+        # ===== КЛАВИАТУРА =====
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        
+        if release.get('link'):
+            keyboard.add(InlineKeyboardButton(
+                "🎧 Открыть релиз",
+                url=release['link']
+            ))
+        
+        keyboard.add(
+            InlineKeyboardButton(
+                "🎤 Биография",
+                callback_data=generate_short_callback('bio_from_release', 0, artist_name, '')
+            ),
+            InlineKeyboardButton(
+                "🔔 Напомнить",
+                callback_data=generate_short_callback('subscribe_release', 0, artist_name, '')
+            )
+        )
+        
+        keyboard.add(InlineKeyboardButton(
+            "🔄 Обновить",
+            callback_data=generate_short_callback('release_show', 0, artist_name, '')
+        ))
+        
+        # ===== ОТПРАВЛЯЕМ С ОБЛОЖКОЙ =====
+        cover_url = release.get('cover_url')
+        if cover_url:
+            try:
+                cover_response = requests.get(cover_url, timeout=10)
+                if cover_response.status_code == 200:
+                    bot.send_photo(
+                        message.chat.id,
+                        photo=cover_response.content,
+                        caption=text,
+                        parse_mode='HTML',
+                        reply_markup=keyboard
+                    )
+                    return
+            except Exception as e:
+                logger.debug(f"Не удалось отправить обложку релиза: {e}")
+        
+        bot.send_message(
+            message.chat.id,
+            text,
+            parse_mode='HTML',
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка в send_upcoming_release: {e}")
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
     
 
@@ -4428,6 +4604,14 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
             else:
                 track_text += f"🎤 {artist}: {line}\n"
 
+
+    # ===== КНОПКА: ПРЕДСТОЯЩИЙ РЕЛИЗ =====
+    release_callback = generate_short_callback('release_show', 0, main_artist, '')
+    keyboard.row(InlineKeyboardButton(
+        "🎉 Предстоящий релиз",
+        callback_data=release_callback
+    ))
+
     # ===== КНОПКИ «ВСЕ КОНЦЕРТЫ» ДЛЯ КАЖДОГО =====
     for artist, concert, concert_info in all_concerts:
         concert_callback = generate_short_callback('concerts_show', 0, artist, '')
@@ -4555,6 +4739,36 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
             
 # === ОСТАЛЬНЫЕ ФУНКЦИИ ===
 def generate_ai_fact(artist_name: str, track_name: str = None) -> str:
+    """Генерирует РЕАЛЬНЫЙ факт через Groq. Fallback — старая база."""
+    
+    # ===== 1. ПРОБУЕМ ЧЕРЕЗ GROQ =====
+    client = get_ai_client()
+    if client and track_name:
+        try:
+            prompt = (
+                f"Расскажи один интересный, реальный и малоизвестный факт "
+                f"о песне «{track_name}» исполнителя {artist_name}. "
+                f"Ответ — 1-2 предложения на русском, без вступлений."
+            )
+            
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "Ты музыкальный эксперт. Отвечай кратко и по делу."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=150
+            )
+            
+            fact = response.choices[0].message.content.strip()
+            if fact and len(fact) > 10:
+                logger.info(f"✅ AI факт: {fact[:60]}...")
+                return fact
+        except Exception as e:
+            logger.error(f"❌ Groq ошибка: {e}")
+    
+    # ===== 2. FALLBACK: ЛОКАЛЬНАЯ БАЗА =====
     artist_lower = artist_name.lower()
     
     for key, facts in AI_FACTS_DATABASE.items():
@@ -5112,6 +5326,52 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "❌ Исполнитель не найден", show_alert=True)
             return
 
+
+        # ===== ПРЕДСТОЯЩИЙ РЕЛИЗ =====
+        if call.data.startswith('release_show_'):
+            callback_info = callback_storage.get(call.data, {})
+            artist_name = callback_info.get('artist', '')
+            if artist_name:
+                bot.answer_callback_query(call.id, f"🎉 Ищем релиз {artist_name}")
+                send_upcoming_release(call.message, artist_name)
+            else:
+                bot.answer_callback_query(call.id, "❌ Исполнитель не найден", show_alert=True)
+            return
+
+        # ===== ПОДПИСКА НА НАПОМИНАНИЕ =====
+        if call.data.startswith('subscribe_release_'):
+            callback_info = callback_storage.get(call.data, {})
+            artist_name = callback_info.get('artist', '')
+            user_id = str(call.from_user.id)
+            
+            if not artist_name:
+                bot.answer_callback_query(call.id, "❌ Ошибка", show_alert=True)
+                return
+            
+            if user_id not in user_subscriptions:
+                user_subscriptions[user_id] = []
+            
+            already = any(a['name'].lower() == artist_name.lower() 
+                        for a in user_subscriptions[user_id])
+            
+            if already:
+                bot.answer_callback_query(call.id, f"✅ Уже подписан на {artist_name}")
+            else:
+                user_subscriptions[user_id].append({'name': artist_name})
+                try:
+                    with open(SUBSCRIPTIONS_FILE, 'w', encoding='utf-8') as f:
+                        json.dump(user_subscriptions, f, ensure_ascii=False, indent=2)
+                    bot.answer_callback_query(
+                        call.id, 
+                        f"🔔 Подписка на {artist_name} оформлена!",
+                        show_alert=True
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка сохранения: {e}")
+                    bot.answer_callback_query(call.id, "❌ Ошибка сохранения", show_alert=True)
+            return
+
+
         # === ОБРАБОТЧИК ВЫБОРА ТРЕКА ===
         if call.data.startswith('select_track_'):
             try:
@@ -5636,6 +5896,40 @@ def handle_web_app(message: Message):
                     'message': f'Подписка на {artist_name} оформлена!'
                 }))
         
+
+        elif action == 'full_track':
+            artist = data.get('artist', '').strip()
+            title = data.get('title', '').strip()
+            
+            if not artist or not title:
+                bot.send_message(message.chat.id, "❌ Не указан трек")
+                return
+            
+            status_msg = bot.send_message(
+                message.chat.id,
+                f"🎵 Ищу: <b>{artist}</b> — {title}\n⏳ Это займёт 5-15 секунд...",
+                parse_mode='HTML'
+            )
+            
+            audio_data = download_full_track_from_youtube(f"{artist} {title}", 0, artist, title)
+            
+            try:
+                bot.delete_message(message.chat.id, status_msg.message_id)
+            except:
+                pass
+            
+            if audio_data:
+                bot.send_audio(
+                    message.chat.id,
+                    audio=audio_data,
+                    title=title,
+                    performer=artist
+                )
+            else:
+                bot.send_message(message.chat.id, "❌ Не нашёл трек")    
+
+
+
         else:
             logger.warning(f"⚠️ Неизвестное действие: {action}")
             
@@ -5774,8 +6068,8 @@ def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
                                 now = datetime.now()
                                 days_diff = (release_dt - now).days
                                 
-                                # Если релиз в будущем (через 0-30 дней)
-                                if 0 <= days_diff <= 30:
+                                
+                                if 0 <= days_diff <= 90:
                                     title_elem = item.find(class_=re.compile(r'title|name', re.I))
                                     title = title_elem.text.strip() if title_elem else 'Новый релиз'
                                     
@@ -5852,6 +6146,20 @@ def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Ошибка проверки предстоящих релизов для {artist_name}: {e}")
         return None
+
+def get_upcoming_release_cached(artist_name: str) -> Optional[Dict[str, Any]]:
+    """Кэшированная версия get_upcoming_release"""
+    key = artist_name.lower()
+    if key in upcoming_cache:
+        data, ts = upcoming_cache[key]
+        if time.time() - ts < UPCOMING_CACHE_DURATION:
+            return data
+    
+    result = get_upcoming_release(artist_name)
+    upcoming_cache[key] = (result, time.time())
+    return result
+
+
 
 def check_new_releases_for_subscriptions():
     if not user_subscriptions:
