@@ -18,6 +18,10 @@ import logging
 import threading
 from bs4 import BeautifulSoup
 import io
+from dotenv import load_dotenv
+
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
 
 
 import telebot
@@ -67,12 +71,9 @@ def get_ai_client():
     return _ai_client
 # ===== КОНЕЦ БЛОКА =====
 
+import telebot
+bot = telebot.TeleBot(TOKEN)
 
-
-
-# === ТОКЕНЫ ===
-TELEGRAM_TOKEN = '8586892813:AAEgkMDSC2efFQYx9J2TD8SllVK5HUf6LWo'
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # === НАСТРОЙКИ ===
 CACHE_DURATION = 3600
