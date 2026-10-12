@@ -3050,12 +3050,20 @@ def send_artist_bio(message: Message, artist_name: str):
         web_app=WebAppInfo(url="https://antog1439-afk.github.io/Muzyka/")
     ))
 
-    # Предстоящий релиз
-    release_callback = generate_short_callback('release_show', 0, info['name'], '')
-    keyboard.add(InlineKeyboardButton(
-        "🎉 Предстоящий релиз",
-        callback_data=release_callback
-    ))
+    # Последний и Предстоящий релизы
+    last_release_callback = generate_short_callback('last_release_show', 0, info['name'], '')
+    upcoming_release_callback = generate_short_callback('release_show', 0, info['name'], '')
+    
+    keyboard.row(
+        InlineKeyboardButton(
+            "📅 Последний релиз",
+            callback_data=last_release_callback
+        ),
+        InlineKeyboardButton(
+            "🎉 Предстоящий релиз",
+            callback_data=upcoming_release_callback
+        )
+    )
     
     # Концерты
     concert_info = check_concerts_yandex_music(artist_name)
@@ -3381,6 +3389,206 @@ async def get_concerts_via_nodriver(artist_name: str) -> List[Dict[str, Any]]:
                 browser.stop()
             except:
                 pass
+
+
+async def get_upcoming_release_via_nodriver(artist_name: str) -> Optional[Dict[str, Any]]:
+    """Ищет предстоящий релиз через nodriver (реальный Chrome)"""
+    browser = None
+    try:
+        client = get_ym_client()
+        artist_id = None
+        if client:
+            search_result = client.search(artist_name)
+            if search_result and search_result.artists and search_result.artists.results:
+                for artist in search_result.artists.results:
+                    if artist.name.lower() == artist_name.lower():
+                        artist_id = artist.id
+                        logger.info(f"✅ Найден точный артист: {artist.name} (ID: {artist_id})")
+                        break
+                if not artist_id:
+                    artist = search_result.artists.results[0]
+                    artist_id = artist.id
+                    logger.info(f"⚠️ Точного нет, берём: {artist.name} (ID: {artist_id})")
+
+        if not artist_id:
+            logger.error(f"❌ Не нашли artist_id для {artist_name}")
+            return None
+
+        logger.info(f"🌐 Nodriver: открываем страницу артиста {artist_name}")
+        browser = await uc.start(
+            headless=True,
+            sandbox=False,
+            browser_executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        )
+
+        url = f"https://music.yandex.ru/artist/{artist_id}"
+        tab = await browser.get(url)
+        logger.info("⏳ Nodriver: ждём загрузки страницы артиста...")
+        await asyncio.sleep(10)
+
+        html = await tab.get_content()
+        logger.info(f"📄 HTML артиста: {len(html)} символов")
+
+
+        # DEBUG: сохраняем HTML для анализа
+        try:
+            with open(f'debug_artist_{artist_name}.html', 'w', encoding='utf-8') as f:
+                f.write(html)
+            logger.info(f"💾 HTML сохранён в debug_artist_{artist_name}.html")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения HTML: {e}")
+
+
+        # Ищем блок "Предстоящий релиз"
+        result = parse_upcoming_release_from_html(html, artist_name)
+        return result
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка Nodriver (upcoming): {e}")
+        return None
+    finally:
+        if browser:
+            try:
+                browser.stop()
+            except:
+                pass
+
+
+def parse_upcoming_release_from_html(html: str, artist_name: str) -> Optional[Dict[str, Any]]:
+    """Парсит предстоящий релиз из HTML страницы артиста"""
+    try:
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # ===== СПОСОБ 1: Ищем блок "Предстоящий релиз" =====
+        # В Яндексе блок называется "Предстоящий релиз" или "Upcoming release"
+        upcoming_headers = soup.find_all(['h2', 'h3', 'div', 'span'], 
+                                          string=re.compile(r'Предстоящий релиз|Upcoming release', re.I))
+        
+        for header in upcoming_headers:
+            # Ищем родительский блок
+            parent = header.find_parent(['section', 'div'])
+            if not parent:
+                continue
+            
+            text = parent.get_text(' ', strip=True)
+            logger.debug(f"🔍 Найден блок предстоящего релиза: {text[:200]}")
+            
+            # Ищем дату типа "16 октября 2026" или "16 October 2026"
+            date_match = re.search(
+                r'(\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4})',
+                text, re.IGNORECASE
+            )
+            if not date_match:
+                date_match = re.search(r'(\d{1,2}\s+\w+\s+\d{4})', text)
+            
+            if date_match:
+                date_str = date_match.group(1)
+                logger.info(f"📅 Найдена дата релиза: {date_str}")
+                
+                # Пытаемся распарсить дату
+                try:
+                    # Русский формат: "16 октября 2026"
+                    months_ru = {
+                        'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4,
+                        'мая': 5, 'июня': 6, 'июля': 7, 'августа': 8,
+                        'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
+                    }
+                    
+                    parts = date_str.lower().split()
+                    if len(parts) == 3:
+                        day = int(parts[0])
+                        month = months_ru.get(parts[1], 1)
+                        year = int(parts[2])
+                        release_dt = datetime(year, month, day)
+                        now = datetime.now()
+                        days_diff = (release_dt - now).days
+                        
+                        # Название релиза
+                        title = 'Новый релиз'
+                        # Ищем рядом ссылку на альбом
+                        album_link = parent.find('a', href=re.compile(r'/album/\d+'))
+                        if album_link:
+                            title_text = album_link.get_text(strip=True)
+                            if title_text:
+                                title = title_text
+                        
+                        # Обложка
+                        cover_url = None
+                        img = parent.find('img')
+                        if img:
+                            cover_url = img.get('src') or img.get('data-src')
+                            if cover_url and cover_url.startswith('//'):
+                                cover_url = 'https:' + cover_url
+                        
+                        # Ссылка
+                        link = None
+                        if album_link:
+                            href = album_link.get('href', '')
+                            if href:
+                                link = 'https://music.yandex.ru' + href if href.startswith('/') else href
+                        
+                        return {
+                            'has_upcoming': True,
+                            'release_title': title,
+                            'release_date': release_dt.strftime('%Y-%m-%d'),
+                            'release_type': 'album',
+                            'artist': artist_name,
+                            'days_left': days_diff,
+                            'cover_url': cover_url,
+                            'link': link,
+                            'source': 'yandex'
+                        }
+                except Exception as e:
+                    logger.debug(f"Ошибка парсинга даты '{date_str}': {e}")
+                    continue
+        
+        # ===== СПОСОБ 2: Ищем через JSON-LD =====
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                data = json.loads(script.string)
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get('@type') in ['MusicAlbum', 'MusicGroup']:
+                        album = item.get('album')
+                        if album:
+                            albums = album if isinstance(album, list) else [album]
+                            now = datetime.now()
+                            for a in albums:
+                                date_pub = a.get('datePublished')
+                                if date_pub:
+                                    try:
+                                        release_dt = datetime.strptime(date_pub[:10], '%Y-%m-%d')
+                                        days_diff = (release_dt - now).days
+                                        if days_diff >= 0:
+                                            return {
+                                                'has_upcoming': True,
+                                                'release_title': a.get('name', 'Новый релиз'),
+                                                'release_date': date_pub[:10],
+                                                'release_type': 'album',
+                                                'artist': artist_name,
+                                                'days_left': days_diff,
+                                                'cover_url': a.get('image'),
+                                                'link': a.get('url'),
+                                                'source': 'yandex'
+                                            }
+                                    except:
+                                        continue
+            except:
+                continue
+        
+        logger.warning(f"⚠️ Не нашли предстоящий релиз для {artist_name} в HTML")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Ошибка парсинга предстоящего релиза: {e}")
+        return None
+
+
+
+
+
 
 
 def parse_concerts_from_html(html: str) -> List[Dict[str, Any]]:
@@ -3877,6 +4085,122 @@ def send_upcoming_release(message: Message, artist_name: str):
     except Exception as e:
         logger.error(f"Ошибка в send_upcoming_release: {e}")
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+
+
+def send_last_release(message: Message, artist_name: str):
+    """Показывает ПОСЛЕДНИЙ релиз артиста"""
+    try:
+        bot.send_chat_action(message.chat.id, 'typing')
+        status_msg = bot.reply_to(
+            message,
+            f"🔍 Ищем последний релиз: <b>{artist_name}</b>...",
+            parse_mode='HTML'
+        )
+        
+        release = get_last_release(artist_name)
+        
+        try:
+            bot.delete_message(message.chat.id, status_msg.message_id)
+        except:
+            pass
+        
+        # ===== НЕ НАШЛИ =====
+        if not release or not release.get('found'):
+            bot.send_message(
+                message.chat.id,
+                f"😔 <b>Не удалось найти последний релиз</b>\n\n"
+                f"🎤 {artist_name}\n\n"
+                f"💡 Возможные причины:\n"
+                f"• Артист не выпускал релизы\n"
+                f"• Данные временно недоступны",
+                parse_mode='HTML'
+            )
+            return
+        
+        # ===== НАШЛИ =====
+        # Форматируем дату
+        release_date = release.get('release_date', '')
+        formatted_date = format_release_date(release_date) if release_date else 'Дата неизвестна'
+        relative_time = get_relative_time(release_date) if release_date else None
+        
+        type_emoji = {'album': '💿', 'single': '🎵', 'ep': '📀'}
+        r_type = release.get('release_type', 'album')
+        
+        text = (
+            f"📅 <b>ПОСЛЕДНИЙ РЕЛИЗ</b>\n\n"
+            f"🎤 <b>{release.get('artist', artist_name)}</b>\n"
+            f"{type_emoji.get(r_type, '💿')} <b>Название:</b> "
+            f"{release.get('release_title', 'Без названия')}\n"
+            f"📆 <b>Дата выхода:</b> {formatted_date}"
+        )
+        
+        if relative_time:
+            text += f"  <i>({relative_time})</i>"
+        
+        if release.get('track_count'):
+            text += f"\n🎵 <b>Треков:</b> {release['track_count']}"
+        
+        src_name = 'Deezer' if release.get('source') == 'deezer' else 'Яндекс.Музыка'
+        text += f"\n\n📡 Источник: {src_name}"
+        
+        # ===== КЛАВИАТУРА =====
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        
+        if release.get('link'):
+            keyboard.add(InlineKeyboardButton(
+                "🎧 Открыть релиз",
+                url=release['link']
+            ))
+        
+        # Кнопка "Все треки" + "Био"
+        keyboard.add(
+            InlineKeyboardButton(
+                "🎵 Все треки",
+                callback_data=generate_short_callback('search_artist', 0, artist_name, '')
+            ),
+            InlineKeyboardButton(
+                "🎤 Био",
+                callback_data=generate_short_callback('bio_from_release', 0, artist_name, '')
+            )
+        )
+        
+        # Кнопка "Предстоящий релиз"
+        upcoming_callback = generate_short_callback('release_show', 0, artist_name, '')
+        keyboard.add(InlineKeyboardButton(
+            "🎉 Предстоящий релиз",
+            callback_data=upcoming_callback
+        ))
+        
+        # ===== ОТПРАВЛЯЕМ С ОБЛОЖКОЙ =====
+        cover_url = release.get('cover_url')
+        if cover_url:
+            try:
+                cover_response = requests.get(cover_url, timeout=10)
+                if cover_response.status_code == 200:
+                    bot.send_photo(
+                        message.chat.id,
+                        photo=cover_response.content,
+                        caption=text,
+                        parse_mode='HTML',
+                        reply_markup=keyboard
+                    )
+                    return
+            except Exception as e:
+                logger.debug(f"Не удалось отправить обложку релиза: {e}")
+        
+        bot.send_message(
+            message.chat.id,
+            text,
+            parse_mode='HTML',
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка в send_last_release: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
+
+
+
     
 
 # === ФУНКЦИИ ДЛЯ АЛЬБОМОВ ===
@@ -4493,8 +4817,8 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     upcoming_release = get_upcoming_release(artist_name)
     
     track_text = (
-        f"🎵 <b>{track_info['artists']} — {track_info['title']}</b>\n\n"
-        f"💿 <b>Альбом:</b> {track_info['album']}"
+        f"<b>{track_info['artists']} — {track_info['title']}</b>\n\n"
+        f"<b>Альбом:</b> {track_info['album']}"
     )
     
     if track_info.get('year'):
@@ -4502,7 +4826,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     
     if track_info.get('formatted_date'):
         formatted_date = track_info['formatted_date']
-        track_text += f"\n📆 <b>Дата релиза:</b> {formatted_date}"
+        track_text += f"\n<b>Дата релиза:</b> {formatted_date}"
         
         release_date = track_info.get('release_date')
         if release_date:
@@ -4513,24 +4837,24 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     elif track_info.get('release_date'):
         formatted = format_release_date(track_info['release_date'])
         if formatted:
-            track_text += f"\n📆 <b>Дата релиза:</b> {formatted}"
+            track_text += f"\n<b>Дата релиза:</b> {formatted}"
             relative_time = get_relative_time(track_info['release_date'])
             if relative_time:
                 track_text += f"  <i>({relative_time})</i>"
     else:
-        track_text += f"\n📆 <b>Дата релиза:</b> неизвестна"
+        track_text += f"\n<b>Дата релиза:</b> неизвестна"
     
-    track_text += f"\n⏱ <b>Длительность:</b> {track_info['duration_str']}"
+    track_text += f"\n<b>Длительность:</b> {track_info['duration_str']}"
     
     if track_info.get('explicit'):
-        track_text += "\n🔞 <b>Parental Advisory — Explicit Content</b>"
+        track_text += "\n<b>Parental Advisory — Explicit Content</b>"
     
     if song_meaning:
-        track_text += f"\n\n📖 <b>Смысл песни:</b>\n{song_meaning['meaning']}"
+        track_text += f"\n\n<b>Смысл песни:</b>\n{song_meaning['meaning']}"
         if song_meaning.get('emotion'):
-            track_text += f"\n\n🎭 <b>Настроение:</b> {song_meaning['emotion']}"
+            track_text += f"\n\n<b>Настроение:</b> {song_meaning['emotion']}"
     else:
-        track_text += f"\n\n🤖 <b>ИИ-факт:</b>\n{ai_fact}"
+        track_text += f"\n\n<b>ИИ-факт:</b>\n{ai_fact}"
     
     # ===== ДОБАВЛЯЕМ ИНФОРМАЦИЮ О ПРЕДСТОЯЩЕМ РЕЛИЗЕ =====
     if upcoming_release and upcoming_release.get('has_upcoming'):
@@ -4543,16 +4867,16 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
         else:
             date_text = f"через {days} дней"
         
-        track_text += f"\n\n🎉 <b>НОВЫЙ РЕЛИЗ У {artist_name.upper()}!</b>\n"
-        track_text += f"💿 <b>{upcoming_release.get('release_title', 'Новый альбом')}</b>\n"
-        track_text += f"📅 <b>Выходит:</b> {date_text}"
+        track_text += f"\n\n<b>НОВЫЙ РЕЛИЗ У {artist_name.upper()}!</b>\n"
+        track_text += f"<b>{upcoming_release.get('release_title', 'Новый альбом')}</b>\n"
+        track_text += f"<b>Выходит:</b> {date_text}"
         
         if upcoming_release.get('release_date'):
             formatted = format_release_date(upcoming_release['release_date'])
             if formatted:
                 track_text += f"  <i>({formatted})</i>"
     
-    track_text += f"\n\n🎧 <b>Слушать на платформах:</b>"
+    track_text += f"\n\n<b>Слушать на платформах:</b>"
     
     # ===== КЛАВИАТУРА =====
     keyboard = InlineKeyboardMarkup(row_width=2)
@@ -4625,9 +4949,9 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     
     if all_concerts:
         if len(all_concerts) == 1:
-            track_text += f"\n\n🎫 <b>Ближайший концерт:</b>\n"
+            track_text += f"\n\n<b>Ближайший концерт:</b>\n"
         else:
-            track_text += f"\n\n🎫 <b>Ближайшие концерты:</b>\n"
+            track_text += f"\n\n<b>Ближайшие концерты:</b>\n"
 
         for artist, concert, _ in all_concerts:
             city = concert.get('city') or '—'
@@ -4647,17 +4971,25 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
             line += f" · {city}"
 
             if ticket_url:
-                track_text += f'🎤 {artist}: <a href="{ticket_url}">{line}</a>\n'
+                track_text += f'{artist}: <a href="{ticket_url}">{line}</a>\n'
             else:
-                track_text += f"🎤 {artist}: {line}\n"
+                track_text += f"{artist}: {line}\n"
 
 
-    # ===== КНОПКА: ПРЕДСТОЯЩИЙ РЕЛИЗ =====
-    release_callback = generate_short_callback('release_show', 0, main_artist, '')
-    keyboard.row(InlineKeyboardButton(
-        "🎉 Предстоящий релиз",
-        callback_data=release_callback
-    ))
+    # ===== КНОПКИ: ПОСЛЕДНИЙ И ПРЕДСТОЯЩИЙ РЕЛИЗ =====
+    last_release_callback = generate_short_callback('last_release_show', 0, main_artist, '')
+    upcoming_release_callback = generate_short_callback('release_show', 0, main_artist, '')
+    
+    keyboard.row(
+        InlineKeyboardButton(
+            "Последний релиз",
+            callback_data=last_release_callback
+        ),
+        InlineKeyboardButton(
+            "Предстоящий релиз",
+            callback_data=upcoming_release_callback
+        )
+    )
 
     # ===== КНОПКИ «ВСЕ КОНЦЕРТЫ» ДЛЯ КАЖДОГО =====
     for artist, concert, concert_info in all_concerts:
@@ -5385,6 +5717,19 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "❌ Исполнитель не найден", show_alert=True)
             return
 
+
+        # ===== ПОСЛЕДНИЙ РЕЛИЗ =====
+        if call.data.startswith('last_release_show_'):
+            callback_info = callback_storage.get(call.data, {})
+            artist_name = callback_info.get('artist', '')
+            if artist_name:
+                bot.answer_callback_query(call.id, f"📅 Ищем последний релиз {artist_name}")
+                send_last_release(call.message, artist_name)
+            else:
+                bot.answer_callback_query(call.id, "❌ Исполнитель не найден", show_alert=True)
+            return   
+
+
         # ===== ПОДПИСКА НА НАПОМИНАНИЕ =====
         if call.data.startswith('subscribe_release_'):
             callback_info = callback_storage.get(call.data, {})
@@ -6079,120 +6424,18 @@ def get_artist_new_release(artist_name: str) -> Optional[Dict[str, Any]]:
         return None
 
 def get_upcoming_release(artist_name: str) -> Optional[Dict[str, Any]]:
-    """Проверяет, есть ли у исполнителя предстоящий релиз (сначала Яндекс Музыка)"""
+    """Проверяет предстоящий релиз через nodriver"""
+    logger.info(f"🎉 Ищем предстоящий релиз через nodriver: {artist_name}")
     try:
-        # ===== 1. СНАЧАЛА ПРОВЕРЯЕМ ЯНДЕКС МУЗЫКУ =====
-        encoded_name = urllib.parse.quote(artist_name)
-        url = f"https://music.yandex.ru/artist/{encoded_name}"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-        }
-        
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Ищем будущие релизы
-            upcoming = soup.find_all(['div', 'a'], class_=re.compile(r'upcoming|future|release|soon|preorder', re.I))
-            
-            for item in upcoming:
-                text = item.get_text(' ', strip=True)
-                
-                # Ищем дату
-                date_match = re.search(r'(\d{1,2}\s+[а-я]+\s+\d{4}|\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})', text, re.IGNORECASE)
-                
-                if date_match:
-                    date_str = date_match.group(1)
-                    try:
-                        for fmt in ['%d %B %Y', '%d %b %Y', '%d.%m.%Y', '%Y-%m-%d', '%d %B %Y года']:
-                            try:
-                                # Очищаем строку от лишнего
-                                clean_date = re.sub(r'года|year', '', date_str).strip()
-                                release_dt = datetime.strptime(clean_date, fmt)
-                                now = datetime.now()
-                                days_diff = (release_dt - now).days
-                                
-                                
-                                if 0 <= days_diff <= 90:
-                                    title_elem = item.find(class_=re.compile(r'title|name', re.I))
-                                    title = title_elem.text.strip() if title_elem else 'Новый релиз'
-                                    
-                                    # Ищем обложку
-                                    img_elem = item.find('img')
-                                    cover_url = None
-                                    if img_elem:
-                                        cover_url = img_elem.get('src') or img_elem.get('data-src')
-                                    
-                                    # Ищем ссылку
-                                    link_elem = item.find('a', href=re.compile(r'/album/|/track/', re.I))
-                                    link = None
-                                    if link_elem:
-                                        href = link_elem.get('href', '')
-                                        if href:
-                                            link = 'https://music.yandex.ru' + href if href.startswith('/') else href
-                                    
-                                    return {
-                                        'has_upcoming': True,
-                                        'release_title': title,
-                                        'release_date': date_str,
-                                        'release_type': 'album',
-                                        'artist': artist_name,
-                                        'days_left': days_diff,
-                                        'cover_url': cover_url,
-                                        'link': link,
-                                        'source': 'yandex'
-                                    }
-                            except:
-                                continue
-                    except:
-                        pass
-        
-        # ===== 2. ЕСЛИ В ЯНДЕКС НЕ НАШЛИ — ПРОВЕРЯЕМ DEEZER =====
-        search_url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(artist_name)}&limit=1"
-        response = requests.get(search_url, timeout=15)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('data') and len(data['data']) > 0:
-                artist_id = data['data'][0]['id']
-                
-                albums_url = f"https://api.deezer.com/artist/{artist_id}/albums?limit=10"
-                albums_response = requests.get(albums_url, timeout=15)
-                
-                if albums_response.status_code == 200:
-                    albums_data = albums_response.json()
-                    if albums_data.get('data'):
-                        for album in albums_data['data']:
-                            release_date = album.get('release_date', '')
-                            if release_date:
-                                try:
-                                    release_dt = datetime.strptime(release_date, '%Y-%m-%d')
-                                    now = datetime.now()
-                                    days_diff = (release_dt - now).days
-                                    
-                                    if 0 <= days_diff <= 30:
-                                        return {
-                                            'has_upcoming': True,
-                                            'release_title': album.get('title', 'Новый альбом'),
-                                            'release_date': release_date,
-                                            'release_type': 'album',
-                                            'cover_url': album.get('cover_xl') or album.get('cover_big'),
-                                            'link': album.get('link', ''),
-                                            'artist': artist_name,
-                                            'days_left': days_diff,
-                                            'source': 'deezer'
-                                        }
-                                except:
-                                    pass
-        
-        return None
-        
+        result = asyncio.run(get_upcoming_release_via_nodriver(artist_name))
+        if result:
+            logger.info(f"✅ Найден предстоящий релиз: {result.get('release_title')}")
+            return result
     except Exception as e:
-        logger.error(f"Ошибка проверки предстоящих релизов для {artist_name}: {e}")
-        return None
+        logger.error(f"❌ Nodriver (upcoming) не сработал: {e}")
+    
+    return None
+
 
 def get_upcoming_release_cached(artist_name: str) -> Optional[Dict[str, Any]]:
     """Кэшированная версия get_upcoming_release"""
@@ -6205,6 +6448,119 @@ def get_upcoming_release_cached(artist_name: str) -> Optional[Dict[str, Any]]:
     result = get_upcoming_release(artist_name)
     upcoming_cache[key] = (result, time.time())
     return result
+
+
+def get_last_release(artist_name: str) -> Optional[Dict[str, Any]]:
+    """Находит ПОСЛЕДНИЙ (самый свежий) релиз артиста"""
+    try:
+        # ===== 1. СНАЧАЛА DEEZER (там точные даты) =====
+        search_url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(artist_name)}&limit=1"
+        response = requests.get(search_url, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('data') and len(data['data']) > 0:
+                artist_id = data['data'][0]['id']
+                found_name = data['data'][0].get('name', artist_name)
+                logger.info(f"🎵 Deezer artist_id={artist_id} ({found_name})")
+                
+                # Получаем все альбомы, сортируем по дате
+                albums_url = f"https://api.deezer.com/artist/{artist_id}/albums?limit=20"
+                albums_response = requests.get(albums_url, timeout=15)
+                
+                if albums_response.status_code == 200:
+                    albums_data = albums_response.json()
+                    if albums_data.get('data'):
+                        # Фильтруем те, у которых есть release_date
+                        valid_albums = []
+                        for album in albums_data['data']:
+                            release_date = album.get('release_date', '')
+                            if release_date:
+                                try:
+                                    dt = datetime.strptime(release_date, '%Y-%m-%d')
+                                    # Не будущие релизы
+                                    if dt <= datetime.now():
+                                        valid_albums.append((dt, album))
+                                except:
+                                    continue
+                        
+                        if valid_albums:
+                            # Сортируем по дате (сначала свежие)
+                            valid_albums.sort(key=lambda x: x[0], reverse=True)
+                            latest_dt, latest_album = valid_albums[0]
+                            
+                            release_date_str = latest_album.get('release_date', '')
+                            
+                            logger.info(f"✅ Последний релиз: {latest_album.get('title')} ({release_date_str})")
+                            
+                            return {
+                                'found': True,
+                                'release_title': latest_album.get('title', 'Новый релиз'),
+                                'release_date': release_date_str,
+                                'release_type': 'album',
+                                'cover_url': (
+                                    latest_album.get('cover_xl') or
+                                    latest_album.get('cover_big') or
+                                    latest_album.get('cover_medium')
+                                ),
+                                'link': latest_album.get('link', ''),
+                                'artist': found_name,
+                                'track_count': latest_album.get('nb_tracks', 0),
+                                'source': 'deezer'
+                            }
+        
+        # ===== 2. FALLBACK: ЯНДЕКС МУЗЫКА =====
+        logger.info(f"🔍 Deezer не дал релиз, ищем в Яндексе: {artist_name}")
+        client = get_ym_client()
+        if client:
+            search = client.search(artist_name)
+            if search and search.artists and search.artists.results:
+                artist = search.artists.results[0]
+                artist_id = artist.id
+                
+                # Получаем альбомы артиста через Яндекс API
+                try:
+                    albums_result = client.artists_direct_albums(artist_id, page=0, page_size=20)
+                    if albums_result and albums_result.albums:
+                        valid_albums = []
+                        for album in albums_result.albums:
+                            # Пробуем получить дату
+                            year = album.year if hasattr(album, 'year') else None
+                            if year:
+                                # Берём только прошедшие годы
+                                if year <= datetime.now().year:
+                                    valid_albums.append((year, album))
+                        
+                        if valid_albums:
+                            valid_albums.sort(key=lambda x: x[0], reverse=True)
+                            latest_year, latest_album = valid_albums[0]
+                            
+                            cover_url = None
+                            if hasattr(latest_album, 'cover_uri') and latest_album.cover_uri:
+                                cover_url = "https://" + latest_album.cover_uri.replace("%%", "600x600")
+                            
+                            return {
+                                'found': True,
+                                'release_title': latest_album.title or 'Новый релиз',
+                                'release_date': f"{latest_year}-01-01",
+                                'release_type': 'album',
+                                'cover_url': cover_url,
+                                'link': f"https://music.yandex.ru/album/{latest_album.id}" if latest_album.id else None,
+                                'artist': artist.name,
+                                'track_count': latest_album.track_count if hasattr(latest_album, 'track_count') else 0,
+                                'source': 'yandex'
+                            }
+                except Exception as e:
+                    logger.debug(f"Яндекс albums не сработал: {e}")
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения последнего релиза: {e}")
+        return None
+
+
+
 
 
 
