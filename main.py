@@ -3050,18 +3050,13 @@ def send_artist_bio(message: Message, artist_name: str):
         web_app=WebAppInfo(url="https://antog1439-afk.github.io/Muzyka/")
     ))
 
-    # Последний и Предстоящий релизы
+        
+    # Последний релиз
     last_release_callback = generate_short_callback('last_release_show', 0, info['name'], '')
-    upcoming_release_callback = generate_short_callback('release_show', 0, info['name'], '')
-    
     keyboard.row(
         InlineKeyboardButton(
             "📅 Последний релиз",
             callback_data=last_release_callback
-        ),
-        InlineKeyboardButton(
-            "🎉 Предстоящий релиз",
-            callback_data=upcoming_release_callback
         )
     )
     
@@ -4164,12 +4159,6 @@ def send_last_release(message: Message, artist_name: str):
             )
         )
         
-        # Кнопка "Предстоящий релиз"
-        upcoming_callback = generate_short_callback('release_show', 0, artist_name, '')
-        keyboard.add(InlineKeyboardButton(
-            "🎉 Предстоящий релиз",
-            callback_data=upcoming_callback
-        ))
         
         # ===== ОТПРАВЛЯЕМ С ОБЛОЖКОЙ =====
         cover_url = release.get('cover_url')
@@ -4813,8 +4802,8 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     nearest_artist = all_concerts[0][0] if all_concerts else None
     nearest_concert_info = all_concerts[0][2] if all_concerts else None
     
-    # ===== ПРОВЕРЯЕМ ПРЕДСТОЯЩИЙ РЕЛИЗ =====
-    upcoming_release = get_upcoming_release(artist_name)
+
+
     
     track_text = (
         f"<b>{track_info['artists']} — {track_info['title']}</b>\n\n"
@@ -4856,25 +4845,7 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
     else:
         track_text += f"\n\n<b>ИИ-факт:</b>\n{ai_fact}"
     
-    # ===== ДОБАВЛЯЕМ ИНФОРМАЦИЮ О ПРЕДСТОЯЩЕМ РЕЛИЗЕ =====
-    if upcoming_release and upcoming_release.get('has_upcoming'):
-        days = upcoming_release.get('days_left', 0)
-        
-        if days == 0:
-            date_text = "СЕГОДНЯ! 🎉"
-        elif days == 1:
-            date_text = "ЗАВТРА! 🔥"
-        else:
-            date_text = f"через {days} дней"
-        
-        track_text += f"\n\n<b>НОВЫЙ РЕЛИЗ У {artist_name.upper()}!</b>\n"
-        track_text += f"<b>{upcoming_release.get('release_title', 'Новый альбом')}</b>\n"
-        track_text += f"<b>Выходит:</b> {date_text}"
-        
-        if upcoming_release.get('release_date'):
-            formatted = format_release_date(upcoming_release['release_date'])
-            if formatted:
-                track_text += f"  <i>({formatted})</i>"
+    
     
     track_text += f"\n\n<b>Слушать на платформах:</b>"
     
@@ -4976,18 +4947,12 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
                 track_text += f"{artist}: {line}\n"
 
 
-    # ===== КНОПКИ: ПОСЛЕДНИЙ И ПРЕДСТОЯЩИЙ РЕЛИЗ =====
+    # ===== КНОПКА: ПОСЛЕДНИЙ РЕЛИЗ =====
     last_release_callback = generate_short_callback('last_release_show', 0, main_artist, '')
-    upcoming_release_callback = generate_short_callback('release_show', 0, main_artist, '')
-    
     keyboard.row(
         InlineKeyboardButton(
             "Последний релиз",
             callback_data=last_release_callback
-        ),
-        InlineKeyboardButton(
-            "Предстоящий релиз",
-            callback_data=upcoming_release_callback
         )
     )
 
@@ -5706,16 +5671,7 @@ def handle_callback(call):
             return
 
 
-        # ===== ПРЕДСТОЯЩИЙ РЕЛИЗ =====
-        if call.data.startswith('release_show_'):
-            callback_info = callback_storage.get(call.data, {})
-            artist_name = callback_info.get('artist', '')
-            if artist_name:
-                bot.answer_callback_query(call.id, f"🎉 Ищем релиз {artist_name}")
-                send_upcoming_release(call.message, artist_name)
-            else:
-                bot.answer_callback_query(call.id, "❌ Исполнитель не найден", show_alert=True)
-            return
+        
 
 
         # ===== ПОСЛЕДНИЙ РЕЛИЗ =====
