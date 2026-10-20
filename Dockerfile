@@ -8,6 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# 1. Устанавливаем системные зависимости (от имени root)
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         ca-certificates \
@@ -38,19 +39,24 @@ RUN apt-get update \
         libcairo2 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN python -m pip install --upgrade pip \
-    && python -m pip install --requirement requirements.txt
-
+# 2. Создаем пользователя bot и рабочие папки
 RUN groupadd --system --gid 10001 bot \
     && useradd --system --uid 10001 --gid bot --home-dir /app bot \
     && mkdir --parents /app/data \
     && chown --recursive bot:bot /app
 
-COPY --chown=bot:bot main.py search_ranking.py ./
-
+# 3. Переключаемся на пользователя bot ДО установки библиотек
 USER bot
 
+# 4. Копируем requirements и устанавливаем библиотеки от имени bot
+COPY --chown=bot:bot requirements.txt ./
+RUN python -m pip install --upgrade pip \
+    && python -m pip install --requirement requirements.txt
+
+# 5. Копируем остальные файлы проекта
+COPY --chown=bot:bot main.py search_ranking.py ./
+
+# 6. Настройки тома и команда запуска
 VOLUME ["/app/data"]
 
 CMD ["python", "main.py"]
