@@ -131,15 +131,11 @@ AI_FACTS_DATABASE = {
         "Трек «911» — один из самых эмоциональных треков Асии",
     ],
     "big baby tape": [
-        "Big Baby Tape (Егор Ракитин) родился в Лос-Анджелесе",
+        "Big Baby Tape (Егор Ракитин) родился в Москве",
         "Трек Gimme The Loot собрал 50+ млн прослушиваний",
         "Участник лейбла Sony Music Russia с 2018 года",
     ],
-    "платина": [
-        "Платина (Давид Нуриев) — российский рэп-исполнитель",
-        "Родился в Санкт-Петербурге",
-        "Известен по трекам: Ай, Заберу, Каспий",
-    ],
+    
     "моргенштерн": [
         "Алишер Моргенштерн родился в Уфе 17 февраля 1998 года",
         "Самый молодой миллионер в российском шоу-бизнесе",
@@ -161,6 +157,75 @@ AI_FACTS_DATABASE = {
         "Трек Believer использован в рекламе FIFA",
     ]
 }
+
+# ====================================================
+# === 🎵 МУЗЫКА ДНЯ (Music of the Day) ===
+# ====================================================
+MUSIC_OF_DAY = {
+    0: {  # Понедельник — бодрое начало
+        'name': '⚡ Бодрый понедельник',
+        'queries': [
+            'энергичная музыка',
+            'upbeat pop hits',
+            'rock hits 2025'
+        ]
+    },
+    1: {  # Вторник — фокус на работе
+        'name': '💼 Фокус-вторник',
+        'queries': [
+            'music for work',
+            'lo-fi beats',
+            'instrumental music'
+        ]
+    },
+    2: {  # Среда — топ
+        'name': '🔥 Топ-среда',
+        'queries': [
+            'top hits 2025',
+            'популярные треки',
+            'billboard hot 100'
+        ]
+    },
+    3: {  # Четверг — новинки
+        'name': '🆕 Новинки-четверг',
+        'queries': [
+            'new music 2025',
+            'новинки музыки',
+            'fresh releases'
+        ]
+    },
+    4: {  # Пятница — танцы
+        'name': '💃 Пятничные танцы',
+        'queries': [
+            'dance music',
+            'club hits',
+            'танцевальная музыка'
+        ]
+    },
+    5: {  # Суббота — веселье
+        'name': '🎉 Суббота',
+        'queries': [
+            'party music',
+            'весёлая музыка',
+            'happy hits'
+        ]
+    },
+    6: {  # Воскресенье — спокойное
+        'name': '😌 Спокойное воскресенье',
+        'queries': [
+            'relaxing music',
+            'chill music',
+            'спокойная музыка'
+        ]
+    }
+}
+
+# Кэш музыки дня (один трек на весь день)
+_music_of_day_cache = {}  # {date_str: track_info}
+
+
+
+
 
 # === БАЗА СМЫСЛОВ ПЕСЕН ===
 SONG_MEANINGS = {
@@ -2722,16 +2787,40 @@ def _get_all_artist_tracks_yandex_fallback(artist_name: str, limit: int = 200) -
             logger.warning("⚠️ Яндекс клиент недоступен, fallback не сработал")
             return None
 
-        # ===== 1. Ищем артиста в Яндексе =====
+    # ===== 1. Ищем артиста в Яндексе =====
         search = client.search(artist_name)
         if not search or not search.artists or not search.artists.results:
             logger.warning(f"❌ Яндекс не нашёл артиста: {artist_name}")
             return None
 
-        # Берём первого артиста
-        artist = search.artists.results[0]
+        # ✅ ИЗМЕНЕНО: умный поиск артиста
+        artist_name_clean = artist_name.lower().strip()
+        best_artist = None
+        best_score = 0
+        
+        for a in search.artists.results:
+            a_clean = a.name.lower().strip()
+            score = 0
+            if a_clean == artist_name_clean:
+                score = 100
+            elif len(a_clean) >= 2 and len(artist_name_clean) >= 2:
+                if a_clean[:2] == artist_name_clean[:2]:
+                    score = 80
+            elif a_clean and artist_name_clean and a_clean[0] == artist_name_clean[0]:
+                if abs(len(a_clean) - len(artist_name_clean)) <= 2:
+                    score = 50
+            
+            if score > best_score:
+                best_score = score
+                best_artist = a
+        
+        if best_artist:
+            artist = best_artist
+        else:
+            artist = search.artists.results[0]
+        
         artist_id = artist.id
-        logger.info(f"✅ Яндекс artist_id={artist_id} ({artist.name})")
+        logger.info(f"✅ Яндекс artist_id={artist_id} ({artist.name}, score: {best_score})")
 
         # ===== 2. Получаем треки артиста =====
         # В yandex_music есть artists_brief_info и tracks
@@ -3341,15 +3430,40 @@ async def get_concerts_via_nodriver(artist_name: str) -> List[Dict[str, Any]]:
         if client:
             search_result = client.search(artist_name)
             if search_result and search_result.artists and search_result.artists.results:
+                # ✅ ИЗМЕНЕНО: умный поиск артиста (NЮ → NIO)
+                artist_name_clean = artist_name.lower().strip()
+                best_artist = None
+                best_score = 0
+                
                 for artist in search_result.artists.results:
-                    if artist.name.lower() == artist_name.lower():
-                        artist_id = artist.id
-                        logger.info(f"✅ Найден точный: {artist.name} (ID: {artist_id})")
-                        break
-                if not artist_id:
+                    artist_clean = artist.name.lower().strip()
+                    score = 0
+                    
+                    # 1. Точное совпадение
+                    if artist_clean == artist_name_clean:
+                        score = 100
+                    # 2. Совпадение первых 2 букв (NЮ → nю, NIO → ni)
+                    elif len(artist_clean) >= 2 and len(artist_name_clean) >= 2:
+                        if artist_clean[:2] == artist_name_clean[:2]:
+                            score = 80
+                    # 3. Первая буква + похожая длина (NЮ и NIO — оба 3 символа, начинаются на N)
+                    elif artist_clean and artist_name_clean and artist_clean[0] == artist_name_clean[0]:
+                        if abs(len(artist_clean) - len(artist_name_clean)) <= 2:
+                            score = 50
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_artist = artist
+                
+                if best_artist:
+                    artist_id = best_artist.id
+                    logger.info(f"✅ Выбран артист: {best_artist.name} (ID: {artist_id}, score: {best_score})")
+                else:
+                    # Крайний случай — берём первого
                     artist = search_result.artists.results[0]
                     artist_id = artist.id
-                    logger.info(f"⚠️ Точного нет, берём: {artist.name} (ID: {artist_id})")
+                    logger.warning(f"⚠️ Точного нет, берём первого: {artist.name} (ID: {artist_id})")
+    
 
         if not artist_id:
             logger.error(f"❌ Не нашли ID для {artist_name}")
@@ -3395,15 +3509,35 @@ async def get_upcoming_release_via_nodriver(artist_name: str) -> Optional[Dict[s
         if client:
             search_result = client.search(artist_name)
             if search_result and search_result.artists and search_result.artists.results:
+                # ✅ ИЗМЕНЕНО: умный поиск артиста (NЮ → NIO)
+                artist_name_clean = artist_name.lower().strip()
+                best_artist = None
+                best_score = 0
+                
                 for artist in search_result.artists.results:
-                    if artist.name.lower() == artist_name.lower():
-                        artist_id = artist.id
-                        logger.info(f"✅ Найден точный артист: {artist.name} (ID: {artist_id})")
-                        break
-                if not artist_id:
+                    artist_clean = artist.name.lower().strip()
+                    score = 0
+                    
+                    if artist_clean == artist_name_clean:
+                        score = 100
+                    elif len(artist_clean) >= 2 and len(artist_name_clean) >= 2:
+                        if artist_clean[:2] == artist_name_clean[:2]:
+                            score = 80
+                    elif artist_clean and artist_name_clean and artist_clean[0] == artist_name_clean[0]:
+                        if abs(len(artist_clean) - len(artist_name_clean)) <= 2:
+                            score = 50
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_artist = artist
+                
+                if best_artist:
+                    artist_id = best_artist.id
+                    logger.info(f"✅ Выбран артист: {best_artist.name} (ID: {artist_id}, score: {best_score})")
+                else:
                     artist = search_result.artists.results[0]
                     artist_id = artist.id
-                    logger.info(f"⚠️ Точного нет, берём: {artist.name} (ID: {artist_id})")
+                    logger.warning(f"⚠️ Точного нет, берём первого: {artist.name} (ID: {artist_id})")
 
         if not artist_id:
             logger.error(f"❌ Не нашли artist_id для {artist_name}")
@@ -4657,16 +4791,34 @@ def send_all_tracks(message: Message, artist_name: str):
     try:
         client = get_ym_client()
         if client:
-            # 1. Ищем артиста в Яндексе
             search = client.search(artist_name)
             if search and search.artists and search.artists.results:
-                # 2. Берём первого артиста (самый релевантный)
-                artist = search.artists.results[0]
+                # ✅ ИЗМЕНЕНО: умный поиск артиста
+                artist_name_clean = artist_name.lower().strip()
+                best_artist = None
+                best_score = 0
+                
+                for a in search.artists.results:
+                    a_clean = a.name.lower().strip()
+                    score = 0
+                    if a_clean == artist_name_clean:
+                        score = 100
+                    elif len(a_clean) >= 2 and len(artist_name_clean) >= 2:
+                        if a_clean[:2] == artist_name_clean[:2]:
+                            score = 80
+                    elif a_clean and artist_name_clean and a_clean[0] == artist_name_clean[0]:
+                        if abs(len(a_clean) - len(artist_name_clean)) <= 2:
+                            score = 50
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_artist = a
+                
+                artist = best_artist if best_artist else search.artists.results[0]
                 artist_id = artist.id
                 
-                # 3. Получаем фото через функцию
                 artist_photo_url = get_artist_cover_url_concerts(artist_id, "600x600")
-                logger.info(f"🖼 Фото артиста из Яндекса: {artist.name} (ID: {artist_id})")
+                logger.info(f"🖼 Фото артиста из Яндекса: {artist.name} (ID: {artist_id}, score: {best_score})")
             else:
                 logger.warning(f"⚠️ Яндекс не нашёл артиста: {artist_name}")
     except Exception as e:
@@ -5142,6 +5294,46 @@ def search_track_with_retry(query: str, max_retries: int = 3) -> Optional[Dict[s
                 time.sleep(RETRY_DELAY)
     return None
 
+def get_music_of_the_day() -> Optional[Dict[str, Any]]:
+    """
+    Возвращает трек дня. Кэшируется на сутки — все пользователи
+    в течение дня получают один и тот же трек.
+    """
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    
+    # ===== ПРОВЕРЯЕМ КЭШ =====
+    if today_str in _music_of_day_cache:
+        track_info = _music_of_day_cache[today_str]
+        logger.info(f"✅ Музыка дня из кэша: {track_info.get('title')}")
+        return track_info
+    
+    # ===== ВЫБИРАЕМ ДЕНЬ НЕДЕЛИ =====
+    today = datetime.now().weekday()  # 0 = понедельник
+    day_info = MUSIC_OF_DAY.get(today, MUSIC_OF_DAY[0])
+    
+    # ===== ВЫБИРАЕМ СЛУЧАЙНЫЙ ЗАПРОС ИЗ ДНЯ =====
+    query = random.choice(day_info['queries'])
+    logger.info(f"🎵 Музыка дня: {day_info['name']} | запрос: {query}")
+    
+    # ===== ИЩЕМ ТРЕК =====
+    track_info = search_track_with_retry(query)
+    
+    if not track_info:
+        # Fallback — ищем популярную музыку
+        logger.warning(f"⚠️ Не нашли по '{query}', пробуем 'популярная музыка'")
+        track_info = search_track_with_retry('популярная музыка')
+    
+    if track_info:
+        track_info['day_name'] = day_info['name']
+        track_info['day_query'] = query
+        _music_of_day_cache[today_str] = track_info
+        logger.info(f"✅ Музыка дня найдена: {track_info.get('artists')} — {track_info.get('title')}")
+    else:
+        logger.error(f"❌ Не удалось найти музыку дня")
+    
+    return track_info
+
+
 def search_album_with_retry(query: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
     for attempt in range(max_retries):
         try:
@@ -5182,6 +5374,7 @@ def get_search_suggestions(query: str) -> str:
 def set_bot_commands():
     commands = [
         BotCommand("start", "Главное меню"),
+        BotCommand("musicday", "🎵 Музыка дня"), 
         BotCommand("search", "Поиск трека"),
         BotCommand("album", "Поиск альбома"),
         BotCommand("albums", "Все альбомы исполнителя"),
@@ -5247,13 +5440,21 @@ def send_welcome(message: Message):
         "/bio <исполнитель> — биография\n\n"
         "📱 <b>Открыть Mini App:</b>"
     )
+
     markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(
+        "🎵 Музыка дня",
+        callback_data="music_of_day_show"
+    ))
     markup.add(InlineKeyboardButton(
         "📱 Открыть Mini App",
         web_app=WebAppInfo(url="https://antog1439-afk.github.io/Muzyka/")
     ))
     bot.reply_to(message, welcome_text, parse_mode='HTML', reply_markup=markup)
 
+
+
+    
 @bot.message_handler(commands=['help'])
 def help_command(message: Message):
     help_text = (
@@ -5462,6 +5663,29 @@ def quick_search_command(message: Message):
         logger.error(f"Ошибка в quick_search_command: {e}")
         bot.reply_to(message, f"Ошибка: {str(e)[:100]}")
 
+@bot.message_handler(commands=['musicday'])
+def music_of_day_command(message: Message):
+    """🎵 Музыка дня"""
+    bot.send_chat_action(message.chat.id, 'typing')
+    status_msg = bot.reply_to(message, "🎵 Подбираем музыку дня...")
+    
+    track_info = get_music_of_the_day()
+    
+    try:
+        bot.delete_message(message.chat.id, status_msg.message_id)
+    except:
+        pass
+    
+    if track_info:
+        # ✅ Отправляем как обычный трек — с кнопкой «Полный трек»!
+        send_track_result(message, track_info)
+    else:
+        bot.reply_to(
+            message,
+            "❌ Не удалось подобрать музыку дня\n\n"
+            "💡 Попробуйте позже"
+        )
+
 # === ПОДПИСКИ ===
 @bot.message_handler(commands=['subscribe'])
 def subscribe_command(message: Message):
@@ -5613,6 +5837,25 @@ def handle_message(message: Message):
 def handle_callback(call):
     try:
         logger.info(f"📩 Получен callback: {call.data}")
+
+        # ============================================================
+        # === 🎵 МУЗЫКА ДНЯ ===
+        # ============================================================
+        if call.data == 'music_of_day_show':
+            bot.answer_callback_query(call.id, "🎵 Подбираем музыку дня...")
+            
+            track_info = get_music_of_the_day()
+            
+            if track_info:
+                # ✅ Отправляем как обычный трек — с полной клавиатурой!
+                send_track_result(call.message, track_info)
+            else:
+                bot.send_message(
+                    call.message.chat.id,
+                    "❌ Не удалось подобрать музыку дня\n\n"
+                    "💡 Попробуйте позже"
+                )
+            return
 
         # ============================================================
         # === ОБРАБОТЧИК ДЛЯ ft_ (короткая ссылка на полный трек) ===
@@ -5862,7 +6105,8 @@ def handle_callback(call):
                                 duration=track_info.get('duration', 0),
                                 thumb=cover_data,
                                 caption=f"🎵 <b>{track_info['artists']}</b> — {track_info['title']}\n💿 {track_info['album']}",
-                                parse_mode='HTML'
+                                parse_mode='HTML',
+                                timeout=180
                             )
                         else:
                             bot.send_audio(
@@ -5872,7 +6116,8 @@ def handle_callback(call):
                                 performer=track_info['main_artist'],
                                 duration=track_info.get('duration', 0),
                                 caption=f"🎵 <b>{track_info['artists']}</b> — {track_info['title']}",
-                                parse_mode='HTML'
+                                parse_mode='HTML',
+                                timeout=180
                             )
                     except Exception as e:
                         logger.error(f"Ошибка отправки аудио: {e}")
