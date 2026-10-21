@@ -5066,6 +5066,15 @@ def send_track_result(message: Message, track_info: Dict[str, Any]):
             url=f"https://www.google.com/search?q={urllib.parse.quote(artist_name + ' ' + track_title + ' music')}"
         )
     )
+
+    # ===== НОВАЯ КНОПКА "ПОДЕЛИТЬСЯ" =====
+    share_text = f"Слушай {track_info['title']} от {track_info['main_artist']} в @{bot.get_me().username}!"
+    share_url = f"https://t.me/share/url?url=https://t.me/{bot.get_me().username}?start=search_{track_info['track_id']}&text={urllib.parse.quote(share_text)}"
+    
+    keyboard.row(
+        InlineKeyboardButton("📤 Поделиться треком", url=share_url)
+    )
+
     
     
     # ===== РЯД 4: Концерты в Яндекс Музыке =====
@@ -5373,6 +5382,7 @@ def get_search_suggestions(query: str) -> str:
 
 def set_bot_commands():
     commands = [
+        BotCommand("top", "🔥 Топ-10 треков"),
         BotCommand("start", "Главное меню"),
         BotCommand("musicday", "🎵 Музыка дня"), 
         BotCommand("search", "Поиск трека"),
@@ -5409,6 +5419,63 @@ def set_bot_commands():
     
     logger.error("❌ Не удалось установить команды меню после всех попыток")
     return False
+
+def get_top_charts(limit: int = 10) -> List[Dict[str, Any]]:
+    """Получает топ треков из Deezer"""
+    try:
+        url = f"https://api.deezer.com/chart/0/tracks?limit={limit}"
+        response = requests.get(url, timeout=15)
+        if response.status_code == 200:
+            return response.json().get('data', [])
+    except Exception as e:
+        logger.error(f"Ошибка получения топ-чартов: {e}")
+    return []
+
+@bot.message_handler(commands=['top'])
+def top_charts_command(message: Message):
+    """Показывает топ популярных треков"""
+    bot.send_chat_action(message.chat.id, 'typing')
+    status_msg = bot.reply_to(message, "🔥 Загружаем топ треков...")
+    
+    tracks = get_top_charts(10)
+    
+    try:
+        bot.delete_message(message.chat.id, status_msg.message_id)
+    except:
+        pass
+        
+    if not tracks:
+        bot.reply_to(message, "❌ Не удалось загрузить топ-чарты. Попробуйте позже.")
+        return
+        
+    text = "🔥 <b>ТОП-10 ТРЕКОВ МИРА (Deezer)</b>\n\n"
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    
+    for i, track in enumerate(tracks, 1):
+        title = track.get('title', 'Без названия')
+        artist = track.get('artist', {}).get('name', 'Неизвестен')
+        track_id = track.get('id')
+        
+        text += f"{i}. <b>{artist}</b> — {title}\n"
+        
+        if track_id:
+            try:
+                user_track_cache[track_id] = parse_track_data(track)
+            except:
+                pass
+            
+            play_callback = generate_short_callback('play', track_id, artist, title)
+            keyboard.add(InlineKeyboardButton(
+                f"🎧 {artist[:15]} — {title[:20]}",
+                callback_data=play_callback
+            ))
+            
+    bot.send_message(
+        message.chat.id,
+        text,
+        parse_mode='HTML',
+        reply_markup=keyboard
+    )
 
 # === ОБРАБОТЧИКИ КОМАНД ===
 @bot.message_handler(commands=['start'])
@@ -5760,9 +5827,18 @@ def handle_message(message: Message):
     # Если это команда — пропускаем (обрабатывается другими обработчиками)
     if message.text.startswith('/'):
         return
-    
-    query = message.text.strip()
-    
+        
+    # ===== ПРОВЕРКА ДЛЯ ГРУПП =====
+    if message.chat.type in ['group', 'supergroup']:
+        bot_username = bot.get_me().username
+        if f"@{bot_username}" not in message.text:
+            return # Игнорируем сообщения в группах без упоминания бота
+        else:
+            query = message.text.replace(f"@{bot_username}", "").strip()
+    else:
+        # В личных сообщениях берем текст как есть
+        query = message.text.strip()
+        
     if len(query) < 1:
         bot.reply_to(message, "❌ Слишком короткий запрос (минимум 1 символ)")
         return
@@ -5797,25 +5873,20 @@ def handle_message(message: Message):
     try:
         bot.send_chat_action(message.chat.id, 'typing')
         
-        # Ищем ВСЕ треки с похожим названием
         tracks = search_tracks_by_title(query)
         
         if tracks:
             if len(tracks) == 1:
-                # Только один трек — сразу показываем
                 send_track_result(message, parse_track_data(tracks[0]))
             else:
-                # Несколько треков — показываем список для выбора
                 send_track_selection(message, query, tracks)
             return
         
-        # ===== ЕСЛИ ТРЕКИ НЕ НАЙДЕНЫ — ПРОВЕРЯЕМ АЛЬБОМЫ =====
         album_info = search_album_with_retry(query)
         if album_info:
             send_album_result(message, album_info)
             return
         
-        # ===== НИЧЕГО НЕ НАШЛИ =====
         bot.reply_to(
             message,
             f"🔍 Не найдено: {query}\n\n"
@@ -5831,7 +5902,8 @@ def handle_message(message: Message):
     except Exception as e:
         logger.error(f"Ошибка в handle_message: {e}")
         bot.reply_to(message, f"❌ Ошибка: {str(e)[:100]}")
-        
+
+
 # === ОБРАБОТЧИК CALLBACK ===
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
