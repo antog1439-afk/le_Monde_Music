@@ -4900,6 +4900,9 @@ def send_all_tracks(message: Message, artist_name: str):
 
 # === ОБНОВЛЁННАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ТРЕКА ===
 def send_track_result(message: Message, track_info: Dict[str, Any]):
+    import html 
+    track_info['title'] = html.escape(track_info.get('title', '')) 
+
     ai_fact = generate_ai_fact(track_info['main_artist'], track_info['title'])
     song_meaning = get_song_meaning(track_info['title'], track_info['main_artist'])
     
