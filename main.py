@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 import io
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
+import lyricsgenius
 
 
 load_dotenv()
@@ -2410,7 +2411,6 @@ def get_track_preview(track_id: int, artist_name: str = "", track_title: str = "
 def get_lyrics_excerpt(artist: str, title: str, max_lines: int = 6) -> Optional[str]:
     """Ищет текст песни через Genius API"""
     try:
-        import lyricsgenius
         
         # Берем токен из переменных окружения (которые мы прописали в .env)
         genius_token = os.getenv("GENIUS_TOKEN")
