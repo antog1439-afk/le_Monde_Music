@@ -3,3 +3,9 @@ requests
 beautifulsoup4
 yt-dlp[default]
 Pillow
+nodriver
+yandex_music
+python-dotenv
+openai
+matplotlib
+lyricsgenius
